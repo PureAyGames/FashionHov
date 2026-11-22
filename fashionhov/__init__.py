@@ -2,13 +2,18 @@
 
 import bpy
 
-from . import props, photo, trace, cloth, overlay, ui
+from . import (fabric, props, photo, trace, cloth, drape, avatar, sewing, arrange,
+               fitmap, grading, overlay, ui)
 
-_classes = photo.classes + trace.classes + cloth.classes + ui.classes
+_classes = (photo.classes + trace.classes + cloth.classes + fabric.classes + drape.classes
+            + avatar.classes + sewing.classes + arrange.classes + fitmap.classes
+            + grading.classes + ui.classes)
+_modules = (fabric, props, avatar, sewing, arrange, grading)
 
 
 def register():
-    props.register()
+    for m in _modules:
+        m.register()
     for c in _classes:
         bpy.utils.register_class(c)
     overlay.register()
@@ -18,4 +23,5 @@ def unregister():
     overlay.unregister()
     for c in reversed(_classes):
         bpy.utils.unregister_class(c)
-    props.unregister()
+    for m in reversed(_modules):
+        m.unregister()

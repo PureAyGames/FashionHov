@@ -1,5 +1,5 @@
 import bpy
-from .core.fabrics import FABRICS
+from .fabric import FHFabric
 
 REF_PRESETS = {
     'LETTER': (0.2159, 0.2794),   # US Letter paper 8.5 x 11 in
@@ -13,9 +13,11 @@ def _units_update(self, context):
     if self.units == 'IN':
         us.system = 'IMPERIAL'
         us.length_unit = 'INCHES'
+        us.mass_unit = 'POUNDS'
     else:
         us.system = 'METRIC'
         us.length_unit = 'CENTIMETERS'
+        us.mass_unit = 'KILOGRAMS'
     us.scale_length = 1.0
 
 
@@ -46,12 +48,26 @@ class FHSettings(bpy.types.PropertyGroup):
         name="Known Length", default=0.3048, min=0.001, subtype='DISTANCE', unit='LENGTH',
         description="Real length between the two points you click (e.g. 12 in on a ruler)")
     show_measurements: bpy.props.BoolProperty(name="Show Measurements", default=True)
-    fabric: bpy.props.EnumProperty(
-        name="Fabric", items=[(k, v["label"], f'{v["gsm"]} g/m²') for k, v in FABRICS.items()],
-        default='TWILL')
+    fabric: bpy.props.PointerProperty(type=FHFabric, name="Default Fabric")
+    # Hand drape test
+    hand_pose: bpy.props.EnumProperty(
+        name="Hand", items=[('FLAT', "Flat", "Open hand, palm up"),
+                            ('FIST', "Fist", "Closed fist"),
+                            ('UP', "Fingers Up", "Hand pointing up, fabric hangs off the fingertips")])
+    hand_scale: bpy.props.FloatProperty(name="Hand Size", default=1.0, min=0.6, max=1.5,
+                                        description="1.0 = average adult hand (about 19 cm long)")
+    swatch_width: bpy.props.FloatProperty(name="Swatch W", default=0.30, min=0.05, max=1.5,
+                                          subtype='DISTANCE', unit='LENGTH')
+    swatch_height: bpy.props.FloatProperty(name="Swatch H", default=0.30, min=0.05, max=1.5,
+                                           subtype='DISTANCE', unit='LENGTH')
+    swatch_detail: bpy.props.FloatProperty(name="Swatch Detail", default=0.01, min=0.003, max=0.03,
+                                           subtype='DISTANCE', unit='LENGTH')
+    drape_return_scene: bpy.props.StringProperty()
+    drape_source: bpy.props.StringProperty()
     cloth_spacing: bpy.props.FloatProperty(
-        name="Mesh Detail", default=0.012, min=0.003, max=0.1, subtype='DISTANCE', unit='LENGTH',
-        description="Triangle size of the cloth mesh. Smaller = finer wrinkles, slower sim")
+        name="Mesh Detail", default=0.01, min=0.003, max=0.1, subtype='DISTANCE', unit='LENGTH',
+        description="Triangle size of the cloth mesh. Drape is calibrated at 1 cm; "
+                    "smaller = finer wrinkles but slower and a bit floppier")
 
 
 def register():

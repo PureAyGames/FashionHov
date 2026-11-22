@@ -1,4 +1,3 @@
-import bpy
 from bpy_extras.view3d_utils import region_2d_to_origin_3d, region_2d_to_vector_3d
 
 
@@ -35,6 +34,7 @@ def world_outline(obj):
     if obj.mode == 'EDIT':
         import bmesh
         bm = bmesh.from_edit_mesh(me)
+        bm.faces.ensure_lookup_table()
         if bm.faces:
             return [tuple((mw @ v.co).xy) for v in bm.faces[0].verts]
         return [tuple((mw @ v.co).xy) for v in bm.verts]

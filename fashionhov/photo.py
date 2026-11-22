@@ -17,7 +17,7 @@ from bpy_extras.view3d_utils import location_3d_to_region_2d
 from mathutils import Vector
 
 from .core import homography as hg
-from .util import mouse_to_plane, fmt_len, panels
+from .util import mouse_to_plane, panels
 
 GRID = 48
 

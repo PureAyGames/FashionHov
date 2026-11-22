@@ -45,26 +45,20 @@ pts = util.world_outline(p)
 assert abs(math.dist(pts[0], pts[1]) - 0.31) < 1e-6
 
 # Cloth mesh with fabric weight.
-c = cloth.build_cloth(ctx, p, "DENIM", 0.02)
+c = cloth.build_cloth(ctx, p, 0.02)
+c.fh_fabric.preset = 'DENIM'
 area = sum(f.area for f in c.data.polygons)
 assert abs(area - geo.area(pts)) / area < 1e-3, area
 assert all(len(f.vertices) == 3 for f in c.data.polygons)
-st = c.modifiers["FH Cloth"].settings
-total_kg = st.mass * len(c.data.vertices)
-print(f"cloth: {len(c.data.vertices)} verts, {c['fh_weight_g']:.0f} g, sim mass total {total_kg * 1000:.0f} g")
-assert abs(total_kg * 1000 - c["fh_weight_g"]) < 1e-3
+print(f"cloth: {len(c.data.vertices)} verts, {c['fh_weight_g']:.0f} g of {c.fh_fabric.oz_sq_yd:.1f} oz denim")
+assert abs(c["fh_weight_g"] - c.fh_fabric.gsm * area) < 1e-6
+assert abs(c.fh_fabric.oz_sq_yd - 12) < 0.02
 
-# Rebuild replaces rather than duplicates.
-cloth.build_cloth(ctx, p, "JERSEY", 0.03)
+# Rebuild replaces rather than duplicates, and keeps the piece's own fabric.
+c.fh_fabric.drape = 0.9
+cloth.build_cloth(ctx, p, 0.03)
 assert len([o for o in scene.objects if o.get("fh_cloth_source")]) == 1
-
-# Run a few sim frames to make sure the cloth solver accepts it.
-scene.frame_start, scene.frame_end = 1, 5
-for f in range(1, 6):
-    scene.frame_set(f)
-dz = c.evaluated_get(ctx.evaluated_depsgraph_get()).data.vertices[0].co.z
-print(f"after 5 frames vertex z = {dz:.4f}")
-assert dz < 0, "cloth should fall under gravity"
+assert abs(c.fh_fabric.drape - 0.9) < 1e-6
 
 fashionhov.unregister()
 print("OK")

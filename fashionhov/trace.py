@@ -34,6 +34,8 @@ def create_panel(context, points, name="Panel", photo=None):
     obj.show_wire = True
     obj.show_in_front = True
     context.scene.collection.objects.link(obj)
+    from .sewing import ensure_vids
+    ensure_vids(obj)
     return obj
 
 
