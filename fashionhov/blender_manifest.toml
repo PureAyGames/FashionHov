@@ -1,0 +1,15 @@
+schema_version = "1.0.0"
+
+id = "fashionhov"
+version = "0.1.0"
+name = "FashionHov"
+tagline = "Pattern making, photo-to-pattern and fit simulation"
+maintainer = "PureAyGames"
+type = "add-on"
+
+blender_version_min = "5.0.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "Import reference photos from disk"
