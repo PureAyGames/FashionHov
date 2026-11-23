@@ -101,6 +101,125 @@ class FH_PT_panels(Sub, bpy.types.Panel):
         box.prop(obj.fh_grade, "length")
 
 
+def _tool_grid(layout):
+    from .tool import KINDS
+    grid = layout.grid_flow(columns=2, even_columns=True, align=True)
+    for ident, label, _, icon, _ in KINDS:
+        grid.operator("fashionhov.tool", text=label, icon=icon).kind = ident
+
+
+class FH_PT_details(Sub, bpy.types.Panel):
+    bl_label = "Details: Darts, Pleats, Hems, Hardware"
+
+    def draw(self, context):
+        ts = context.scene.fh_tool
+        col = self.layout.column()
+        col.label(text="Pick one, then click / drag on your panels:", icon='INFO')
+        _tool_grid(col)
+        box = col.box()
+        box.label(text="Defaults for new items")
+        row = box.row(align=True)
+        row.prop(ts, "dart_width", text="Dart W")
+        row.prop(ts, "dart_length", text="L")
+        row = box.row(align=True)
+        row.prop(ts, "pleat_depth", text="Pleat")
+        row.prop(ts, "pleat_kind", text="")
+        row = box.row(align=True)
+        row.prop(ts, "hem_width", text="Hem")
+        row.prop(ts, "zip_style", text="")
+        box.prop(ts, "finish")
+        if context.mode == 'EDIT_MESH':
+            col.operator("fashionhov.hem_selected", icon='MOD_EDGESPLIT')
+
+        obj = context.active_object
+        if not obj or not obj.get("fh_panel"):
+            col.label(text="Select a panel to edit its details")
+            return
+        f = obj.fh_features
+        col.prop(f, "seam_allowance", text="Seam Allowance (-1 = default)")
+        for title, coll, fields in (
+                ("Darts", "darts", ("t", "width", "length", "angle")),
+                ("Pleats", "pleats", ("kind", "t", "depth", "stitch")),
+                ("Hems", "hems", ("fold", "width", "turn", "topstitch")),
+                ("Hardware & Zippers", "hardware", None)):
+            items = getattr(f, coll)
+            if not len(items):
+                continue
+            box = col.box()
+            box.label(text=f"{title} ({len(items)})")
+            for i, it in enumerate(items):
+                sub = box.box()
+                head = sub.row()
+                name = it.kind.replace("_", " ").title() if coll == "hardware" else f"{title[:-1]} {i + 1}"
+                head.label(text=name)
+                op = head.operator("fashionhov.feature_remove", text="", icon='X')
+                op.coll, op.index = coll, i
+                if coll == "hardware":
+                    if it.kind == 'ZIPPER':
+                        fields_ = ("style", "start", "length", "fly_width", "finish", "pull_at_start")
+                        if it.style != 'FLY':
+                            fields_ = tuple(x for x in fields_ if x != "fly_width")
+                    elif it.kind == 'BUTTONHOLE':
+                        fields_ = ("size", "angle")
+                    else:
+                        fields_ = ("size", "finish")
+                else:
+                    fields_ = fields
+                    if coll == "hems" and it.fold != 'DOUBLE':
+                        fields_ = tuple(x for x in fields_ if x != "turn")
+                g = sub.grid_flow(columns=2, even_columns=True, align=True)
+                for fld in fields_:
+                    g.prop(it, fld)
+
+
+class FH_PT_thread(Sub, bpy.types.Panel):
+    bl_label = "Thread"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        th = context.scene.fh_thread
+        col = self.layout.column()
+        row = col.row(align=True)
+        row.prop(th, "visible", toggle=True, icon='HIDE_OFF' if th.visible else 'HIDE_ON')
+        row.prop(th, "show_hardware", toggle=True, icon='HIDE_OFF' if th.show_hardware else 'HIDE_ON')
+        col.prop(th, "color")
+        from .details import THREAD_PRESETS
+        row = col.row(align=True)
+        for k, (rgb, label) in THREAD_PRESETS.items():
+            row.operator("fashionhov.thread_preset", text=label.split(" ")[0]).preset = k
+        col.prop(th, "thickness")
+        col.prop(th, "stitch_length")
+        sc = context.scene
+        if len(sc.fh_seams) and sc.fh_seam_index < len(sc.fh_seams):
+            s = sc.fh_seams[sc.fh_seam_index]
+            box = col.box()
+            box.label(text=f"Seam #{s.number} topstitch")
+            box.prop(s, "topstitch", expand=True)
+            if s.topstitch != 'NONE':
+                box.prop(s, "ts_side")
+                row = box.row(align=True)
+                row.prop(s, "ts_dist")
+                if s.topstitch == 'DOUBLE':
+                    row.prop(s, "ts_gap")
+        else:
+            col.label(text="Select a seam (Sew & Fit) to topstitch it")
+        col.operator("fashionhov.rebuild_details", icon='FILE_REFRESH')
+
+
+class FH_PT_export(Sub, bpy.types.Panel):
+    bl_label = "7. Export Pattern"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(context.scene.fh_thread, "seam_allowance", text="Default Seam Allowance")
+        col.prop(context.scene.fh, "show_allowance")
+        row = col.row()
+        row.scale_y = 1.4
+        row.operator("fashionhov.export_pattern", icon='EXPORT')
+        col.label(text="SVG prints 1:1; check the 10 cm square.", icon='INFO')
+
+
 class FH_PT_fabric(Sub, bpy.types.Panel):
     bl_label = "3. Fabric"
 
@@ -213,6 +332,8 @@ class FH_PT_sew(Sub, bpy.types.Panel):
             box.label(text="Tab into Edit Mode on panels or 3D pieces,", icon='INFO')
             box.label(text="select 2 runs of edges, then Sew.")
         box.template_list("FH_UL_seams", "", sc, "fh_seams", sc, "fh_seam_index", rows=3)
+        if sc.get("fh_garment_stale"):
+            col.label(text="Pattern changed: Simulate again", icon='ERROR')
         row = col.row(align=True)
         row.scale_y = 1.4
         row.operator("fashionhov.simulate", icon='PLAY')
@@ -259,5 +380,5 @@ class FH_PT_sizes(Sub, bpy.types.Panel):
         col.operator("fashionhov.fit_avatar_to_size", icon='CON_SIZELIKE')
 
 
-classes = (FH_PT_main, FH_PT_photo, FH_PT_panels, FH_PT_fabric, FH_PT_drape_test,
-           FH_PT_body, FH_PT_sew, FH_PT_sizes)
+classes = (FH_PT_main, FH_PT_photo, FH_PT_panels, FH_PT_details, FH_PT_fabric, FH_PT_drape_test,
+           FH_PT_body, FH_PT_sew, FH_PT_thread, FH_PT_sizes, FH_PT_export)

@@ -96,11 +96,13 @@ def grade(context):
         for panel in panels(scene):
             if panel.get("fh_graded_of"):
                 continue
-            pts = world_outline(panel)
+            from .features import get_derived
+            d = get_derived(panel)
+            pts = d.cut if d else world_outline(panel)
             if len(pts) < 3:
                 continue
             sx, sy = ratios(panel, base, size)
-            g = grade_points(pts, anchor_of(pts), sx, sy)
+            g = grade_points(pts, anchor_of(d.sew_xy() if d else pts), sx, sy)
             me = bpy.data.meshes.new(f"{panel.name} [{size.name}]")
             me.from_pydata([(x, y, 0.0) for x, y in g], [(i, (i + 1) % len(g)) for i in range(len(g))], [])
             me.materials.append(mat)
@@ -124,9 +126,10 @@ def chart(context):
     for key in ("chest", "waist", "hips", "height", "inseam"):
         rows.append((key.capitalize(), [f(getattr(s, key)) for s in sizes]))
     rows.append(("PATTERN", [""] * len(sizes)))
-    base_panels = [p for p in panels(scene) if not p.get("fh_graded_of") and len(world_outline(p)) >= 3]
+    from .features import get_derived
+    base_panels = [p for p in panels(scene) if not p.get("fh_graded_of") and get_derived(p)]
     for p in base_panels:
-        pts = world_outline(p)
+        pts = get_derived(p).sew_xy()
         for label, fn in (("width", lambda q: geo.bbox(q)[2] - geo.bbox(q)[0]),
                           ("length", lambda q: geo.bbox(q)[3] - geo.bbox(q)[1])):
             vals = []
@@ -140,8 +143,8 @@ def chart(context):
         a, b = sewing.seam_chains(seam)
         vals = []
         for s in sizes:
-            sa = grade_points(a, anchor_of(world_outline(seam.a_obj)), *ratios(seam.a_obj, base, s))
-            sb = grade_points(b, anchor_of(world_outline(seam.b_obj)), *ratios(seam.b_obj, base, s))
+            sa = sewing.Poly(grade_points(a, anchor_of(get_derived(seam.a_obj).sew_xy()), *ratios(seam.a_obj, base, s)), a.jumps)
+            sb = sewing.Poly(grade_points(b, anchor_of(get_derived(seam.b_obj).sew_xy()), *ratios(seam.b_obj, base, s)), b.jumps)
             vals.append(f"{f(sewing.polyline_length(sa))}/{f(sewing.polyline_length(sb))}")
         rows.append((f"Seam #{seam.number} ({seam.a_obj.name}/{seam.b_obj.name})", vals))
 

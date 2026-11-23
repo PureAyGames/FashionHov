@@ -7,6 +7,7 @@
 * Tape-measure lines on the avatar where it was measured.
 """
 
+import math
 import bpy
 import blf
 import gpu
@@ -17,6 +18,7 @@ from mathutils import Vector
 from .core import geometry as geo
 from .util import fmt_len, world_outline, panels
 from . import sewing
+from .core import derive as dv
 
 _handles = []
 MAX_LABELLED_EDGES = 60
@@ -96,12 +98,74 @@ def seam_geometry(seam):
     return shapes, threads
 
 
+LINE_COLORS = {
+    "dart_leg": (1.0, 0.35, 0.3, 1), "pleat_fold": (0.4, 0.7, 1.0, 1), "pleat_inner": (0.4, 0.7, 1.0, 0.5),
+    "pleat_stitch": (0.4, 0.7, 1.0, 0.8), "fly_fold": (0.75, 0.5, 1.0, 1), "fly_stitch": (1.0, 0.6, 0.2, 1),
+}
+
+
+def _circle(c, r, z, n=20):
+    return [(c[0] + r * math.cos(2 * math.pi * k / n), c[1] + r * math.sin(2 * math.pi * k / n), z) for k in range(n)]
+
+
+def draw_features():
+    from . import features as ft
+    scene = bpy.context.scene
+    show_sa = scene.fh.show_allowance
+    for panel in panels(scene):
+        if panel.get("fh_graded_of") or not panel.visible_get():
+            continue
+        d = ft.get_derived(panel)
+        if d is None:
+            continue
+        z = panel.matrix_world.translation.z + 0.0015
+        f = panel.fh_features
+        if d.lines or len(d.cut) != len(ft.base_outline(panel)):
+            _lines([(x, y, z) for x, y in d.cut], (1, 1, 1, 0.9), 2.0, loop=True)
+        for line in d.lines:
+            col = LINE_COLORS.get(line["kind"], (1, 1, 1, 0.7))
+            _lines([(x, y, z) for x, y in line["pts"]], col, 1.5)
+        for h in f.hems:
+            pts, _ = d.chain(h.va, h.vb)
+            _lines([(x, y, z) for x, y in pts], (0.3, 0.9, 0.4, 1), 4.0)
+            _lines([(x, y, z) for x, y in dv.offset_polyline(pts, max(h.width - 0.003, 0.0015))],
+                   (0.3, 0.9, 0.4, 0.6), 1.0)
+        for hw in f.hardware:
+            if hw.kind == 'ZIPPER':
+                path = ft.zipper_path(panel, hw)
+                _lines([(x, y, z) for x, y in path], (0.75, 0.75, 0.75, 1), 6.0)
+                if path:
+                    tip = path[0] if hw.pull_at_start else path[-1]
+                    _lines(_circle(tip, 0.004, z), (1, 1, 1, 1), 2.0, loop=True)
+            elif hw.kind == 'BUTTONHOLE':
+                c = ft.hardware_world(panel, hw)
+                L = hw.size / 2
+                dx, dy = math.cos(hw.angle) * L, math.sin(hw.angle) * L
+                _lines([(c[0] - dx, c[1] - dy, z), (c[0] + dx, c[1] + dy, z)], (1, 0.9, 0.5, 1), 3.0)
+            else:
+                c = ft.hardware_world(panel, hw)
+                col = {"BRASS": (0.9, 0.7, 0.2, 1), "COPPER": (0.9, 0.5, 0.25, 1), "NICKEL": (0.85, 0.85, 0.85, 1),
+                       "BLACK": (0.2, 0.2, 0.2, 1), "GUNMETAL": (0.45, 0.47, 0.5, 1)}[hw.finish]
+                _lines(_circle(c, hw.size / 2, z), col, 2.5, loop=True)
+        if show_sa:
+            from .export import piece_geometry
+            g = piece_geometry(bpy.context, panel)
+            if g:
+                _lines([(x, y, z) for x, y in g["cut"]], (0.7, 0.7, 0.7, 0.6), 1.0, loop=True)
+
+
 def draw_view():
     scene = bpy.context.scene
     if not getattr(scene, "fh", None):
         return
     gpu.state.blend_set('ALPHA')
     gpu.state.depth_test_set('LESS_EQUAL')
+    try:
+        draw_features()
+    except Exception as e:      # drawing must never spam errors every frame
+        if not getattr(draw_view, "_warned", False):
+            print("FashionHov overlay:", e)
+            draw_view._warned = True
     for seam in scene.fh_seams:
         shapes, threads = seam_geometry(seam)
         col = tuple(seam.color)
@@ -141,13 +205,17 @@ def draw_pixel():
         for obj in panels(scene):
             if not obj.visible_get():
                 continue
-            pts = world_outline(obj)
+            from .features import get_derived
+            d = get_derived(obj)
+            pts = d.sew_xy() if d else world_outline(obj)
             if len(pts) < 2:
                 continue
             z = obj.matrix_world.translation.z
             if len(pts) <= MAX_LABELLED_EDGES:
                 n = len(pts)
                 for i in range(n):
+                    if d and i in d.jumps:
+                        continue
                     a, b = pts[i], pts[(i + 1) % n]
                     _label(region, rv3d, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, z),
                            fmt_len(context, geo.edge_lengths([a, b], closed=False)[0]), (1.0, 0.95, 0.6, 1.0))

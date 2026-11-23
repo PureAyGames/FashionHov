@@ -7,7 +7,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fashionhov"))
 from core import homography as hg, geometry as geo  # noqa: E402
-from core import fabrics as fb, bodymeasure, mannequin, fit  # noqa: E402
+from core import fabrics as fb, bodymeasure, mannequin, fit, derive as dv  # noqa: E402
 from core.fabrics import vertex_mass_kg  # noqa: E402
 
 
@@ -91,6 +91,55 @@ class Body(unittest.TestCase):
         ev = lambda x: bodymeasure.measure(*mannequin.build(x))[0]
         x, m, rms, _ = fit.fit(knobs, dict(self.want), ev, self.want, iters=2)
         self.assertLess(rms, 0.5)
+
+
+class Features(unittest.TestCase):
+    base = [(1, (0, 0)), (2, (0.5, 0)), (3, (0.5, 0.6)), (4, (0, 0.6))]
+
+    def test_no_features_is_identity(self):
+        d = dv.derive(self.base)
+        self.assertEqual(d.sew_xy(), [p for _, p in self.base])
+        self.assertEqual(d.cut, [p for _, p in self.base])
+        self.assertEqual(d.jumps, set())
+
+    def test_pleat_adds_intake_but_not_sewn_length(self):
+        for kind, mult in (("KNIFE", 2), ("BOX", 4), ("INVERTED", 4)):
+            d = dv.derive(self.base, pleats=[dict(id=1, va=3, vb=4, t=0.5, depth=0.02, kind=kind, stitch=0.05)])
+            xs = [p[0] for p in d.cut]
+            self.assertAlmostEqual(max(xs) - min(xs), 0.5 + mult * 0.02, msg=kind)
+            top, j = d.chain(3, 4)
+            self.assertAlmostEqual(dv.polyline_len(top, j), 0.5, msg=kind)
+            self.assertAlmostEqual(dv.polyline_len(top), 0.5 + mult * 0.02, msg=kind)
+            self.assertEqual(len(d.sews), 1)
+
+    def test_point_mapping_round_trip(self):
+        d = dv.derive(self.base, pleats=[dict(id=1, va=3, vb=4, t=0.5, depth=0.03, kind="KNIFE", stitch=0)])
+        for p in [(0.1, 0.3), (0.4, 0.2)]:
+            q = d.unmap_point(d.map_point(p))
+            self.assertAlmostEqual(q[0], p[0])
+            self.assertAlmostEqual(q[1], p[1])
+
+    def test_dart(self):
+        d = dv.derive(self.base, darts=[dict(id=1, va=3, vb=4, t=0.3, width=0.03, length=0.1)])
+        top, j = d.chain(3, 4)
+        self.assertAlmostEqual(dv.polyline_len(top, j), 0.47)
+        self.assertEqual(len(d.cut), 7)               # 4 corners + 2 legs + apex
+        (a1, apex), (a2, apex2) = d.sews[0]
+        self.assertAlmostEqual(math.dist(a1, apex), math.dist(a2, apex2))
+        self.assertAlmostEqual(apex[1], 0.5)          # 10 cm straight down from the top edge
+
+    def test_fly_extension_keeps_seam(self):
+        d = dv.derive(self.base, flies=[dict(id=1, va=4, vb=1, start=0.0, length=0.18, width=0.035)])
+        self.assertAlmostEqual(min(p[0] for p in d.cut), -0.035)
+        cf, j = d.chain(4, 1)
+        self.assertAlmostEqual(dv.polyline_len(cf, j), 0.6)
+        self.assertTrue(any(l["kind"] == "fly_stitch" for l in d.lines))
+
+    def test_seam_allowance_offset(self):
+        sq = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        out = dv.offset_closed(sq, [0.01, 0.02, 0.01, 0.03])
+        self.assertEqual([tuple(round(c, 6) for c in p) for p in out],
+                         [(-0.03, -0.01), (1.02, -0.01), (1.02, 1.01), (-0.03, 1.01)])
 
 
 if __name__ == "__main__":

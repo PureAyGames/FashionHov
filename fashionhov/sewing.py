@@ -66,26 +66,37 @@ def outline_vids(obj):
     return [(attr.data[i].value, tuple((mw @ me.vertices[i].co).xy)) for i in me.polygons[0].vertices]
 
 
+class Poly(list):
+    """A polyline whose segments listed in .jumps have zero sewn length
+    (a closed dart opening, folded pleat intake)."""
+
+    def __init__(self, pts=(), jumps=()):
+        super().__init__(pts)
+        self.jumps = set(jumps)
+
+
 def chain(obj, v0, v1):
-    """World XY points from vid v0 forward (CCW) to vid v1, inclusive."""
-    ol = outline_vids(obj)
-    ids = [v for v, _ in ol]
-    if v0 not in ids or v1 not in ids:
-        return []
-    i, j = ids.index(v0), ids.index(v1)
-    n = len(ol)
-    pts = [ol[i][1]]
-    while i != j:
-        i = (i + 1) % n
-        pts.append(ol[i][1])
-    return pts
+    """Sewing-line points (world XY) from vid v0 forward (CCW) to vid v1, after
+    darts and pleats are applied."""
+    from .features import get_derived
+    d = get_derived(obj)
+    if d is None:
+        return Poly()
+    pts, jumps = d.chain(v0, v1)
+    return Poly(pts, jumps)
 
 
 def polyline_length(pts):
-    return sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
+    j = getattr(pts, "jumps", ())
+    return sum(math.dist(a, b) for i, (a, b) in enumerate(zip(pts, pts[1:])) if i not in j)
 
 
 # ---------- seam data ----------
+
+def _details_changed(context):
+    from . import details
+    details.request(context)
+
 
 def _palette(i):
     r, g, b = colorsys.hsv_to_rgb((i * 0.618034) % 1.0, 0.75, 1.0)
@@ -101,6 +112,17 @@ class FHSeam(bpy.types.PropertyGroup):
     b_obj: bpy.props.PointerProperty(type=bpy.types.Object)
     b_v0: bpy.props.IntProperty()
     b_v1: bpy.props.IntProperty()
+    topstitch: bpy.props.EnumProperty(
+        name="Topstitch", default='NONE', update=lambda s, c: _details_changed(c), items=[
+            ('NONE', "None", ""), ('SINGLE', "Single", ""), ('DOUBLE', "Double", "Two rows, like jeans")])
+    ts_side: bpy.props.EnumProperty(
+        name="Side", default='A', update=lambda s, c: _details_changed(c),
+        items=[('A', "First Piece", "Seam allowance pressed toward the first piece"),
+               ('B', "Second Piece", ""), ('BOTH', "Both", "Stitch on both sides")])
+    ts_dist: bpy.props.FloatProperty(name="From Seam", default=0.002, min=0.0005, max=0.03, subtype='DISTANCE',
+                                     unit='LENGTH', update=lambda s, c: _details_changed(c))
+    ts_gap: bpy.props.FloatProperty(name="Row Gap", default=0.0064, min=0.002, max=0.03, subtype='DISTANCE',
+                                    unit='LENGTH', update=lambda s, c: _details_changed(c))
     flip: bpy.props.BoolProperty(
         name="Flip", default=True,
         description="Which way the two edges line up. Most seams join edges running in opposite "
@@ -129,10 +151,11 @@ def add_seam(scene, a, b):
 
 
 def arc_params(pts):
-    """Cumulative arc length of each point, normalised to 0..1."""
+    """Cumulative sewn arc length of each point, normalised to 0..1."""
+    j = getattr(pts, "jumps", ())
     acc = [0.0]
-    for a, b in zip(pts, pts[1:]):
-        acc.append(acc[-1] + math.dist(a, b))
+    for i, (a, b) in enumerate(zip(pts, pts[1:])):
+        acc.append(acc[-1] + (0.0 if i in j else math.dist(a, b)))
     total = acc[-1] or 1.0
     return [x / total for x in acc]
 
@@ -150,6 +173,7 @@ def point_at(pts, t):
 
 
 def sample(pts, n):
+    """n points evenly spaced by sewn arc length."""
     return [point_at(pts, k / (n - 1)) for k in range(n)] if n > 1 else [pts[0]]
 
 
@@ -230,10 +254,12 @@ def runs_in_piece(obj):
         mid = comp[len(comp) // 2]
         runs.append((pxy[ends[0]], pxy[ends[1]], pxy[mid]))
 
-    ol = outline_vids(panel)
-    # panel outline in pattern space = panel world xy (pieces are built from that)
-    ids = [v for v, _ in ol]
-    pts = [p for _, p in ol]
+    from .features import get_derived
+    d = get_derived(panel)
+    # pieces' pattern UVs are in derived (pleat-spread) space; seam ends live on base vids
+    sew = [(p.vid, p.xy) for p in d.sew if p.vid is not None]
+    ids = [v for v, _ in sew]
+    pts = [p for _, p in sew]
     out = []
     for e0, e1, mid in runs:
         i0 = min(range(len(pts)), key=lambda i: math.dist(pts[i], e0))

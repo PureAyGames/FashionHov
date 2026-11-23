@@ -68,23 +68,62 @@ def resample_outline(points, spacing):
     return out
 
 
-def hex_fill(poly, spacing):
-    """Interior points on a hexagonal lattice (gives near-equilateral triangles)."""
+def _seg_dists(P, segs):
+    """Min distance from each point in P (N,2) to a set of segments (M,2,2)."""
+    import numpy as np
+    if len(segs) == 0:
+        return np.full(len(P), np.inf)
+    A, B = segs[:, 0], segs[:, 1]
+    AB = B - A
+    L2 = np.maximum((AB ** 2).sum(1), 1e-18)
+    best = np.full(len(P), np.inf)
+    for k in range(0, len(segs), 256):          # chunk to keep memory small
+        a, ab, l2 = A[k:k + 256], AB[k:k + 256], L2[k:k + 256]
+        t = np.clip(((P[:, None, :] - a[None]) * ab[None]).sum(-1) / l2[None], 0, 1)
+        q = a[None] + t[..., None] * ab[None]
+        best = np.minimum(best, np.sqrt(((P[:, None, :] - q) ** 2).sum(-1)).min(1))
+    return best
+
+
+def hex_fill(poly, spacing, lines=()):
+    """Interior points on a hexagonal lattice (gives near-equilateral triangles),
+    kept away from the outline and from any internal constraint lines."""
+    import numpy as np
     x0, y0, x1, y1 = bbox(poly)
     dy = spacing * math.sqrt(3) / 2
+    ys = np.arange(y0 + dy / 2, y1, dy)
     pts = []
-    row = 0
-    y = y0 + dy / 2
-    while y < y1:
-        x = x0 + (spacing / 2 if row % 2 else 0.0)
-        while x < x1:
-            p = (x, y)
-            if point_in_polygon(p, poly) and dist_to_polygon(p, poly) > spacing * 0.5:
-                pts.append(p)
-            x += spacing
-        y += dy
-        row += 1
-    return pts
+    for r, y in enumerate(ys):
+        xs = np.arange(x0 + (spacing / 2 if r % 2 else 0.0), x1, spacing)
+        pts.append(np.column_stack([xs, np.full(len(xs), y)]))
+    if not pts:
+        return []
+    P = np.vstack(pts)
+    poly_a = np.asarray(poly, float)
+    xs, ys_ = poly_a[:, 0], poly_a[:, 1]
+    xn, yn = np.roll(xs, -1), np.roll(ys_, -1)
+    inside = np.zeros(len(P), bool)
+    for i in range(len(poly_a)):
+        cond = (ys_[i] > P[:, 1]) != (yn[i] > P[:, 1])
+        with np.errstate(divide='ignore', invalid='ignore'):
+            xi = xs[i] + (P[:, 1] - ys_[i]) * (xn[i] - xs[i]) / (yn[i] - ys_[i])
+        inside ^= cond & (P[:, 0] < xi)
+    P = P[inside]
+    segs = [[poly_a[i], poly_a[(i + 1) % len(poly_a)]] for i in range(len(poly_a))]
+    for line in lines:
+        segs += [[line[i], line[i + 1]] for i in range(len(line) - 1)]
+    d = _seg_dists(P, np.asarray(segs, float))
+    return [tuple(p) for p in P[d > spacing * 0.5]]
+
+
+def resample_polyline(points, spacing):
+    out = [points[0]]
+    for a, b in zip(points, points[1:]):
+        steps = max(1, math.ceil(math.dist(a, b) / spacing))
+        for s in range(1, steps + 1):
+            t = s / steps
+            out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+    return out
 
 
 def snap_angle(origin, p, step_deg=45.0):

@@ -48,6 +48,8 @@ class FHSettings(bpy.types.PropertyGroup):
         name="Known Length", default=0.3048, min=0.001, subtype='DISTANCE', unit='LENGTH',
         description="Real length between the two points you click (e.g. 12 in on a ruler)")
     show_measurements: bpy.props.BoolProperty(name="Show Measurements", default=True)
+    show_allowance: bpy.props.BoolProperty(name="Show Seam Allowance", default=True,
+                                           description="Draw the cut line (with seam and hem allowance) around panels")
     fabric: bpy.props.PointerProperty(type=FHFabric, name="Default Fabric")
     # Hand drape test
     hand_pose: bpy.props.EnumProperty(

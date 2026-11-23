@@ -3,12 +3,12 @@
 import bpy
 
 from . import (fabric, props, photo, trace, cloth, drape, avatar, sewing, arrange,
-               fitmap, grading, overlay, ui)
+               fitmap, grading, features, tool, details, export, overlay, ui)
 
 _classes = (photo.classes + trace.classes + cloth.classes + fabric.classes + drape.classes
             + avatar.classes + sewing.classes + arrange.classes + fitmap.classes
-            + grading.classes + ui.classes)
-_modules = (fabric, props, avatar, sewing, arrange, grading)
+            + grading.classes + tool.classes + details.classes + export.classes + ui.classes)
+_modules = (fabric, props, avatar, sewing, arrange, grading, features, tool, details)
 
 
 def register():

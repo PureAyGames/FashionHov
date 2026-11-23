@@ -96,7 +96,14 @@ def wrap_piece(context, piece, panel, avatar, body=None):
     if pl.mirror:
         u = -u
     th = th0 + u / R
-    world = np.column_stack([axis[0] + R * np.cos(th), axis[1] + R * np.sin(th), top - (y1 - pxy[:, 1])])
+    # Pleat intake starts tucked slightly inward so it folds to the inside.
+    Rv = np.full(len(pxy), R)
+    from .core.geometry import point_in_polygon
+    for poly in piece.get("fh_intake", []):
+        poly = [tuple(p) for p in poly]
+        inside = np.array([point_in_polygon(tuple(p), poly) for p in pxy])
+        Rv[inside] -= min(0.01, pl.gap * 0.5)
+    world = np.column_stack([axis[0] + Rv * np.cos(th), axis[1] + Rv * np.sin(th), top - (y1 - pxy[:, 1])])
     piece.matrix_world = Matrix.Identity(4)
     for v, p in zip(me.vertices, world):
         v.co = Vector(p)
@@ -108,21 +115,21 @@ def wrap_piece(context, piece, panel, avatar, body=None):
 # ---------- garment assembly ----------
 
 def boundary_on_chain(piece, chain_pts, tol=0.002):
-    """Boundary vertices of a piece lying on a 2D pattern chain, sorted along it.
-    Returns [(vertex_index, t)] with t = normalised arc position 0..1."""
+    """Vertices of a piece lying on a 2D pattern chain (outline or internal line, e.g.
+    the line under a fly), sorted along it. Returns [(vertex_index, t)], t = 0..1
+    sewn arc position (jump segments count as zero length)."""
     me = piece.data
     uv = me.uv_layers.get("Pattern")
     pxy = {}
     for loop in me.loops:
         pxy[loop.vertex_index] = tuple(uv.data[loop.index].uv)
-    edge_faces = {}
-    for p in me.polygons:
-        for ek in p.edge_keys:
-            edge_faces[ek] = edge_faces.get(ek, 0) + 1
-    bverts = {i for ek, c in edge_faces.items() if c == 1 for i in ek}
+    xs = [p[0] for p in chain_pts]
+    ys = [p[1] for p in chain_pts]
+    x0, x1, y0, y1 = min(xs) - tol, max(xs) + tol, min(ys) - tol, max(ys) + tol
+    cand = [i for i, p in pxy.items() if x0 <= p[0] <= x1 and y0 <= p[1] <= y1]
     params = sewing.arc_params(chain_pts)
     out = []
-    for i in bverts:
+    for i in cand:
         p = pxy[i]
         best = None
         for k, (a, b) in enumerate(zip(chain_pts, chain_pts[1:])):
@@ -197,6 +204,15 @@ def build_garment(context):
         sew_edges += [e for e in pairs if e[0] != e[1]]
         seam_verts[str(seam.number)] = {"a": [i for i, _ in sa], "b": [i for i, _ in sb]}
 
+    # Internal seams: dart legs closed, pleats tacked.
+    for p in pieces:
+        for a, b in p.get("fh_sews", []):
+            a = [tuple(x) for x in a]
+            b = [tuple(x) for x in b]
+            sa = [(i + offset[p.name], t) for i, t in boundary_on_chain(p, a)]
+            sb = [(i + offset[p.name], t) for i, t in boundary_on_chain(p, b)]
+            sew_edges += [e for e in match_sides(sa, sb) if e[0] != e[1]]
+
     me = bpy.data.meshes.new(GARMENT)
     me.from_pydata(verts, sew_edges, faces)
     # carry pattern UVs over
@@ -249,6 +265,12 @@ def build_garment(context):
         p.hide_set(True)
     scene.frame_start, scene.frame_end = 1, SIM_FRAMES
     scene.frame_set(1)
+    scene["fh_garment_stale"] = False
+    try:
+        from . import details
+        details.rebuild(context)
+    except Exception as e:
+        print("FashionHov: details rebuild failed:", e)
     return obj
 
 
@@ -262,6 +284,11 @@ def remove_garment(context):
         me = obj.data
         bpy.data.objects.remove(obj)
         bpy.data.meshes.remove(me)
+        try:
+            from . import details
+            details.rebuild(context)
+        except Exception as e:
+            print("FashionHov: details rebuild failed:", e)
 
 
 # ---------- operators ----------
