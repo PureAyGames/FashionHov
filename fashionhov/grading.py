@@ -10,7 +10,7 @@ import bpy
 
 from . import sewing
 from .core import geometry as geo
-from .util import world_outline, panels, fmt_len
+from .util import world_outline, fmt_len
 
 IN = 0.0254
 # Mid-range US men's body measurements (inches): brands vary, so edit freely.
@@ -93,9 +93,8 @@ def grade(context):
         root.children.link(col)
         mat = bpy.data.materials.get(f"FH Size {size.name}") or bpy.data.materials.new(f"FH Size {size.name}")
         mat.diffuse_color = SIZE_COLORS[si % len(SIZE_COLORS)]
-        for panel in panels(scene):
-            if panel.get("fh_graded_of"):
-                continue
+        from .util import active_panels
+        for panel in active_panels(scene):
             from .features import get_derived
             d = get_derived(panel)
             pts = d.cut if d else world_outline(panel)
@@ -127,7 +126,8 @@ def chart(context):
         rows.append((key.capitalize(), [f(getattr(s, key)) for s in sizes]))
     rows.append(("PATTERN", [""] * len(sizes)))
     from .features import get_derived
-    base_panels = [p for p in panels(scene) if not p.get("fh_graded_of") and get_derived(p)]
+    from .util import active_panels
+    base_panels = [p for p in active_panels(scene) if get_derived(p)]
     for p in base_panels:
         pts = get_derived(p).sew_xy()
         for label, fn in (("width", lambda q: geo.bbox(q)[2] - geo.bbox(q)[0]),

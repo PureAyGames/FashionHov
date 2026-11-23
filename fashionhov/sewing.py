@@ -225,11 +225,12 @@ def runs_in_piece(obj):
     bnd = [e for e in bm.edges if e.select and e.is_boundary]
     if not bnd:
         return []
-    # pattern xy of each vertex (UV holds pattern coords in metres)
+    # pattern xy of each vertex (UV holds pattern coords in metres, + slot offset)
+    ox, oy = obj.get("fh_uv_off", (0.0, 0.0))
     pxy = {}
     for f in bm.faces:
         for l in f.loops:
-            pxy[l.vert] = tuple(l[uv].uv)
+            pxy[l.vert] = (l[uv].uv[0] - ox, l[uv].uv[1] - oy)
     # connected runs
     adj = {}
     for e in bnd:

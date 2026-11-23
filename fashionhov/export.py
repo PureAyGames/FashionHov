@@ -14,7 +14,7 @@ from bpy_extras.io_utils import ExportHelper
 
 from . import features as ft
 from .core import derive as dv
-from .util import panels
+from .util import active_panels
 
 STYLE = {
     "cut": ("#000000", 0.35, None), "sew": ("#7a7a7a", 0.2, "2,1.5"),
@@ -22,6 +22,7 @@ STYLE = {
     "pleat_inner": ("#2c6fbb", 0.25, "1,1.5"), "pleat_stitch": ("#2c6fbb", 0.25, None),
     "fly_fold": ("#8e44ad", 0.3, "4,2"), "fly_stitch": ("#d35400", 0.25, "1,1"),
     "hem_fold": ("#27ae60", 0.3, "4,2"), "mark": ("#000000", 0.25, None),
+    "pocket_place": ("#e67e22", 0.3, "3,1.5"), "pocket_opening": ("#e67e22", 0.3, None),
     "grain": ("#000000", 0.25, None), "zip": ("#555555", 0.4, "0.8,0.8"),
 }
 
@@ -41,6 +42,8 @@ def piece_geometry(context, panel, grade=None):
     for line in d.lines:
         g["lines"].append((line["kind"], line["pts"]))
     for h in panel.fh_features.hems:
+        if not ft.on(h, "hems", scene):
+            continue
         chain, _ = d.chain(h.va, h.vb)
         if len(chain) >= 2:
             g["lines"].append(("hem_fold", chain))
@@ -59,6 +62,8 @@ def piece_geometry(context, panel, grade=None):
                 out = (t[1], -t[0])                 # right of a CCW chain = outside
                 g["segs"].append(("mark", p, dv.add(p, dv.mul(out, max(sa, 0.005) * 0.6))))
     for hw in panel.fh_features.hardware:
+        if not ft.on(hw, ft.hw_category(hw), scene):
+            continue
         if hw.kind == 'ZIPPER':
             path = ft.zipper_path(panel, hw)
             if len(path) >= 2:
@@ -88,6 +93,10 @@ def piece_geometry(context, panel, grade=None):
     for sx in (-1, 1):
         g["segs"].append(("grain", (cx, cy + 0.3 * h), (cx + sx * 0.008, cy + 0.3 * h - 0.015)))
     g["texts"].append(((cx + 0.01, cy), panel.name, 0.008))
+    if panel.get("fh_feature_of"):
+        _, item = ft.owner_of(panel)
+        cut_from = "pocketing" if item is not None and getattr(item, "bag", None) == panel else "self fabric"
+        g["texts"].append(((cx + 0.01, cy - 0.012), f"Cut 1 {cut_from}", 0.005))
     if grade:
         sx_, sy_, (ax, ay) = grade
         f = lambda p: (ax + (p[0] - ax) * sx_, ay + (p[1] - ay) * sy_)
@@ -106,9 +115,7 @@ def collect(context, size_index=None):
     base = sizes[scene.fh_base_size] if len(sizes) else None
     size = sizes[size_index] if size_index is not None and len(sizes) else None
     out = []
-    for panel in panels(scene):
-        if panel.get("fh_graded_of"):
-            continue
+    for panel in active_panels(scene):
         grade = None
         if size is not None and base is not None and size != base:
             from .grading import ratios, anchor_of

@@ -39,6 +39,10 @@ def _changed(self, context):
     panel = self.id_data
     if isinstance(panel, bpy.types.Object):
         request_rebuild(panel)
+        for attr in ("piece", "facing", "bag", "child"):
+            child = getattr(self, attr, None)
+            if child:
+                request_rebuild(child)
 
 
 def _len(name, d, lo=0.001, hi=1.0, desc=""):
@@ -46,8 +50,20 @@ def _len(name, d, lo=0.001, hi=1.0, desc=""):
                                    unit='LENGTH', update=_changed, description=desc)
 
 
+def _en(desc="Turn this detail off without deleting it"):
+    return bpy.props.BoolProperty(name="On", default=True, update=_changed, description=desc)
+
+
 class FHDart(bpy.types.PropertyGroup):
     id: bpy.props.IntProperty()
+    enabled: _en()
+    mode: bpy.props.EnumProperty(name="Type", update=_changed, items=[
+        ('EDGE', "Edge Dart", "Starts at an edge"),
+        ('INNER', "Fisheye Dart", "Inside the panel, pointed at both ends")])
+    x: bpy.props.FloatProperty(update=_changed)    # fisheye centre, panel-local
+    y: bpy.props.FloatProperty(update=_changed)
+    down: bpy.props.FloatProperty(name="Lower Length", default=0.08, min=0.01, max=0.6, subtype='DISTANCE',
+                                  unit='LENGTH', update=_changed, description="Fisheye: centre to bottom point")
     va: bpy.props.IntProperty()
     vb: bpy.props.IntProperty()
     t: bpy.props.FloatProperty(name="Position", min=0.02, max=0.98, default=0.5, subtype='FACTOR', update=_changed)
@@ -59,6 +75,11 @@ class FHDart(bpy.types.PropertyGroup):
 
 class FHPleat(bpy.types.PropertyGroup):
     id: bpy.props.IntProperty()
+    enabled: _en()
+    taper: bpy.props.FloatProperty(
+        name="Taper To", default=0.0, min=0.0, max=2.0, subtype='DISTANCE', unit='LENGTH', update=_changed,
+        description="0 = pleat runs the full length. Otherwise it narrows to nothing this far from the edge "
+                    "(like trouser front pleats)")
     va: bpy.props.IntProperty()
     vb: bpy.props.IntProperty()
     t: bpy.props.FloatProperty(name="Position", min=0.02, max=0.98, default=0.5, subtype='FACTOR', update=_changed)
@@ -70,6 +91,7 @@ class FHPleat(bpy.types.PropertyGroup):
 
 
 class FHHem(bpy.types.PropertyGroup):
+    enabled: _en()
     va: bpy.props.IntProperty()
     vb: bpy.props.IntProperty()
     width: _len("Hem Width", 0.02, 0.003, 0.15, "Finished hem depth")
@@ -84,6 +106,8 @@ class FHHem(bpy.types.PropertyGroup):
 
 class FHHardware(bpy.types.PropertyGroup):
     id: bpy.props.IntProperty()
+    enabled: _en()
+    child: bpy.props.PointerProperty(type=bpy.types.Object, description="Fly shield piece made for this zipper")
     kind: bpy.props.EnumProperty(name="Type", items=HW_KINDS + [('ZIPPER', "Zipper", "")], update=_changed)
     x: bpy.props.FloatProperty(update=_changed)    # panel-local, before pleat spreading
     y: bpy.props.FloatProperty(update=_changed)
@@ -100,7 +124,51 @@ class FHHardware(bpy.types.PropertyGroup):
     pull_at_start: bpy.props.BoolProperty(name="Pull at Start", default=True, update=_changed)
 
 
+POCKET_KINDS = [
+    ('JEANS', "Jeans Back Pocket", "Pointed patch pocket, double topstitch, rivets"),
+    ('PATCH', "Patch Pocket", "Square patch pocket"),
+    ('COIN', "Coin Pocket", "Small patch pocket"),
+    ('SCOOP', "Front Scoop Pocket", "Jeans/chino front pocket: curved opening + facing + bag pieces"),
+]
+
+
+class FHPocket(bpy.types.PropertyGroup):
+    id: bpy.props.IntProperty()
+    enabled: _en()
+    kind: bpy.props.EnumProperty(name="Type", items=POCKET_KINDS)
+    piece: bpy.props.PointerProperty(type=bpy.types.Object, description="The pocket panel (edit it like any panel)")
+    facing: bpy.props.PointerProperty(type=bpy.types.Object, description="Scoop: facing / yoke panel")
+    bag: bpy.props.PointerProperty(type=bpy.types.Object, description="Scoop: pocket bag panel")
+    attach_va: bpy.props.IntProperty()
+    attach_vb: bpy.props.IntProperty()
+    in_sim: bpy.props.BoolProperty(name="Simulate", default=True, update=_changed,
+                                   description="Sew this pocket onto the garment in the simulation")
+    topstitch: bpy.props.EnumProperty(name="Topstitch", default='DOUBLE', update=_changed, items=[
+        ('NONE', "None", ""), ('SINGLE', "Single", ""), ('DOUBLE', "Double", "")])
+    # scoop
+    corner: bpy.props.IntProperty()
+    width: _len("Opening A", 0.11, 0.02, 0.4, "Opening length along the edge before the corner")
+    depth: _len("Opening B", 0.07, 0.02, 0.4, "Opening length along the edge after the corner")
+    curve: bpy.props.FloatProperty(name="Curve", default=0.35, min=-0.5, max=1.5, update=_changed,
+                                   description="0 = straight slant, higher = deeper scoop")
+
+
+def _show_changed(self, context):
+    refresh_all(context)
+
+
+class FHShow(bpy.types.PropertyGroup):
+    """Scene-wide modifier toggles: hide a whole category without deleting anything."""
+    darts: bpy.props.BoolProperty(name="Darts", default=True, update=_show_changed)
+    pleats: bpy.props.BoolProperty(name="Pleats", default=True, update=_show_changed)
+    hems: bpy.props.BoolProperty(name="Hems", default=True, update=_show_changed)
+    zippers: bpy.props.BoolProperty(name="Zippers", default=True, update=_show_changed)
+    hardware: bpy.props.BoolProperty(name="Hardware", default=True, update=_show_changed)
+    pockets: bpy.props.BoolProperty(name="Pockets", default=True, update=_show_changed)
+
+
 class FHFeatures(bpy.types.PropertyGroup):
+    pockets: bpy.props.CollectionProperty(type=FHPocket)
     darts: bpy.props.CollectionProperty(type=FHDart)
     pleats: bpy.props.CollectionProperty(type=FHPleat)
     hems: bpy.props.CollectionProperty(type=FHHem)
@@ -129,13 +197,74 @@ def base_outline(panel):
     return outline_vids(panel)
 
 
+def show(scene):
+    return getattr(scene, "fh_show", None)
+
+
+def on(item, category, scene=None):
+    """Is this feature active (its own toggle AND its category toggle)?"""
+    sh = show(scene or bpy.context.scene)
+    return bool(item.enabled) and (sh is None or getattr(sh, category))
+
+
+def hw_category(hw):
+    return "zippers" if hw.kind == 'ZIPPER' else "hardware"
+
+
+def owner_of(panel):
+    """(parent panel, feature item) for a child panel made by a pocket / fly, else (None, None)."""
+    parent = bpy.data.objects.get(panel.get("fh_feature_of", "")) if panel.get("fh_feature_of") else None
+    if parent is None:
+        return None, None
+    fid = panel.get("fh_feature_id")
+    for x in parent.fh_features.pockets:
+        if x.id == fid:
+            return parent, x
+    for x in parent.fh_features.hardware:
+        if x.id == fid:
+            return parent, x
+    return parent, None
+
+
+def panel_active(panel, scene=None):
+    """False for child panels whose pocket / zipper is switched off (or deleted)."""
+    if not panel.get("fh_feature_of"):
+        return True
+    parent, item = owner_of(panel)
+    if parent is None or item is None:
+        return False
+    cat = "pockets" if hasattr(item, "attach_va") else hw_category(item)
+    return on(item, cat, scene) and panel_active(parent, scene)
+
+
+def panel_simulated(panel, scene=None):
+    if not panel_active(panel, scene):
+        return False
+    if not panel.get("fh_feature_of"):
+        return True
+    _, item = owner_of(panel)
+    return bool(getattr(item, "in_sim", False)) and item.piece == panel
+
+
+def uv_offset(panel):
+    """Child panels sit on top of their parent in pattern space, so their cloth UVs
+    are moved to their own slot (100 m apart) to keep surface lookups unambiguous."""
+    return (100.0 * panel.get("fh_uv_slot", 0), 0.0)
+
+
 def _key(panel, base):
     f = panel.fh_features
-    parts = [tuple(base)]
-    for coll, fields in ((f.darts, ("id", "va", "vb", "t", "width", "length", "angle")),
-                         (f.pleats, ("id", "va", "vb", "t", "depth", "kind", "stitch")),
-                         (f.hardware, ("id", "kind", "va", "vb", "start", "length", "style", "fly_width"))):
+    sh = show(bpy.context.scene)
+    parts = [tuple(base), tuple(getattr(sh, k) for k in ("darts", "pleats", "zippers", "pockets")) if sh else ()]
+    for coll, fields in ((f.darts, ("id", "enabled", "mode", "va", "vb", "t", "width", "length", "angle",
+                                    "x", "y", "down")),
+                         (f.pleats, ("id", "enabled", "va", "vb", "t", "depth", "kind", "stitch", "taper")),
+                         (f.hardware, ("id", "enabled", "kind", "va", "vb", "start", "length", "style", "fly_width")),
+                         (f.pockets, ("id", "enabled", "kind", "corner", "width", "depth", "curve"))):
         parts.append(tuple(tuple(getattr(x, k) for k in fields) for x in coll))
+    for x in f.pockets:
+        if x.piece and x.kind != 'SCOOP':
+            parts.append((tuple(x.piece.matrix_world.translation), tuple(base_outline(x.piece))))
     return hash(tuple(parts))
 
 
@@ -149,20 +278,45 @@ def get_derived(panel):
     if hit and hit[0] == key:
         return hit[1]
     f = panel.fh_features
+    sc = bpy.context.scene
     vids = {v for v, _ in base}
+    mw = panel.matrix_world
     darts = [dict(id=d.id, va=d.va, vb=d.vb, t=d.t, width=d.width, length=d.length, angle=d.angle)
-             for d in f.darts if d.va in vids and d.vb in vids]
-    pleats = [dict(id=p.id, va=p.va, vb=p.vb, t=p.t, depth=p.depth, kind=p.kind, stitch=p.stitch)
-              for p in f.pleats if p.va in vids and p.vb in vids]
+             for d in f.darts if d.mode == 'EDGE' and on(d, "darts", sc) and d.va in vids and d.vb in vids]
+    inner = [dict(id=d.id, c=tuple((mw @ Vector((d.x, d.y, 0))).xy), width=d.width, up=d.length,
+                  down=d.down, angle=d.angle)
+             for d in f.darts if d.mode == 'INNER' and on(d, "darts", sc)]
+    pleats = [dict(id=p.id, va=p.va, vb=p.vb, t=p.t, depth=p.depth, kind=p.kind, stitch=p.stitch, taper=p.taper)
+              for p in f.pleats if on(p, "pleats", sc) and p.va in vids and p.vb in vids]
     flies = [dict(id=h.id, va=h.va, vb=h.vb, start=h.start, length=h.length, width=h.fly_width)
-             for h in f.hardware if h.kind == 'ZIPPER' and h.style == 'FLY' and h.va in vids and h.vb in vids]
+             for h in f.hardware if h.kind == 'ZIPPER' and h.style == 'FLY' and on(h, "zippers", sc)
+             and h.va in vids and h.vb in vids]
+    scoops = [dict(id=x.id, corner=x.corner, width=x.width, depth=x.depth, curve=x.curve)
+              for x in f.pockets if x.kind == 'SCOOP' and on(x, "pockets", sc) and x.corner in vids]
     try:
-        d = dv.derive(base, darts, pleats, flies)
+        d = dv.derive(base, darts, pleats, flies, inner, scoops)
     except Exception as e:          # never let a bad feature take down drawing
         print("FashionHov: feature error on", panel.name, e)
         d = dv.derive(base)
+    # where patch pockets sit on this panel: drawn on the pattern, and built into
+    # the cloth mesh so the pocket has vertices to be sewn onto
+    for x in f.pockets:
+        if x.kind != 'SCOOP' and x.piece and on(x, "pockets", sc):
+            child = base_outline(x.piece)
+            if len(child) >= 3:
+                pts = [p for _, p in child]
+                d.lines.append({"kind": "pocket_place", "id": x.id, "pts": pts + [pts[0]]})
     _cache[panel.name] = (key, d)
     return d
+
+
+def set_local_point(panel, item, xy):
+    """Store a world XY (as seen, after pleat spreading) into item.x / item.y."""
+    set_hardware_world(panel, item, xy)
+
+
+def local_point_world(panel, item):
+    return hardware_world(panel, item)
 
 
 def hardware_world(panel, hw):
@@ -206,7 +360,7 @@ def hems_by_edge(panel):
     ids = [v for v, _ in base]
     out = {}
     for h in panel.fh_features.hems:
-        if h.va not in ids or h.vb not in ids:
+        if not on(h, "hems") or h.va not in ids or h.vb not in ids:
             continue
         i, j = ids.index(h.va), ids.index(h.vb)
         while i != j:
@@ -229,6 +383,31 @@ def seam_allowance(panel, scene):
 
 
 # ---------- auto rebuild ----------
+
+def sync_children(scene):
+    """Hide child panels (and their cloth pieces) whose pocket / zipper is switched off."""
+    for o in scene.objects:
+        src = o
+        if o.get("fh_cloth_source"):
+            src = bpy.data.objects.get(o["fh_cloth_source"])
+            if src is None:
+                continue
+        if not src.get("fh_feature_of"):
+            continue
+        hide = not panel_active(src, scene)
+        if o.get("fh_cloth_source"):
+            hide = hide or not panel_simulated(src, scene)
+        try:
+            if o.hide_get() != hide:
+                o.hide_set(hide)
+        except RuntimeError:
+            pass
+
+
+def refresh_all(context):
+    from .util import panels
+    for p in panels(context.scene):
+        request_rebuild(p)
 
 def invalidate(panel):
     _cache.pop(panel.name, None)
@@ -253,12 +432,20 @@ def flush_now(context):
     names = list(_pending)
     _pending.clear()
     touched = False
+    sync_children(scene)
     for name in names:
         panel = bpy.data.objects.get(name)
         if not panel:
             continue
         invalidate(panel)
         piece = next((o for o in scene.objects if o.get("fh_cloth_source") == name), None)
+        if piece is None and panel.get("fh_feature_of") and panel_simulated(panel, scene):
+            parent = bpy.data.objects.get(panel["fh_feature_of"])
+            ppiece = next((o for o in scene.objects if o.get("fh_cloth_source") == parent.name), None) if parent else None
+            if ppiece:   # parent already has cloth: give the new pocket cloth too
+                build_cloth(context, panel, ppiece.get("fh_spacing", scene.fh.cloth_spacing))
+                touched = True
+                continue
         if piece:
             build_cloth(context, panel, piece.get("fh_spacing", scene.fh.cloth_spacing))
             touched = True
@@ -275,15 +462,20 @@ def flush_now(context):
 classes = ()
 
 
+_CLASSES = (FHDart, FHPleat, FHHem, FHHardware, FHPocket, FHShow, FHFeatures)
+
+
 def register():
-    for c in (FHDart, FHPleat, FHHem, FHHardware, FHFeatures):
+    for c in _CLASSES:
         bpy.utils.register_class(c)
     bpy.types.Object.fh_features = bpy.props.PointerProperty(type=FHFeatures)
+    bpy.types.Scene.fh_show = bpy.props.PointerProperty(type=FHShow)
 
 
 def unregister():
     if bpy.app.timers.is_registered(_flush):
         bpy.app.timers.unregister(_flush)
+    del bpy.types.Scene.fh_show
     del bpy.types.Object.fh_features
-    for c in reversed((FHDart, FHPleat, FHHem, FHHardware, FHFeatures)):
+    for c in reversed(_CLASSES):
         bpy.utils.unregister_class(c)

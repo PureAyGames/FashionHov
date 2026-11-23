@@ -81,18 +81,38 @@ def dashes(pts, stitch, gap_frac=0.25):
 
 def collect(scene):
     """Thread polylines, solid thread polylines, zipper teeth and hardware points."""
-    from .util import panels
+    from .util import active_panels
     from . import sewing
     th = scene.fh_thread
     thread, solid, teeth, points = [], [], [], []
-    for panel in panels(scene):
-        if panel.get("fh_graded_of"):
-            continue
+    for panel in active_panels(scene):
+        if panel.get("fh_feature_of") and not ft.panel_simulated(panel, scene):
+            continue                       # bag / facing / fly shield: paper only
         d = ft.get_derived(panel)
         if d is None:
             continue
+        ox, oy = ft.uv_offset(panel)
+        mark = (len(thread), len(solid), len(teeth), len(points))
         f = panel.fh_features
+        for x in f.pockets:
+            if not ft.on(x, "pockets", scene) or x.topstitch == 'NONE':
+                continue
+            rows = [0.002] + ([0.008] if x.topstitch == 'DOUBLE' else [])
+            if x.kind == 'SCOOP':
+                line = next((l for l in d.lines if l["kind"] == "pocket_opening" and l["id"] == x.id), None)
+                if line:
+                    thread += [dv.offset_polyline(line["pts"], r) for r in rows]
+        if panel.get("fh_feature_of"):
+            parent, item = ft.owner_of(panel)
+            if item is not None and hasattr(item, "attach_va") and item.topstitch != 'NONE':
+                pts, _ = d.chain(item.attach_va, item.attach_vb)
+                rows = [0.002] + ([0.008] if item.topstitch == 'DOUBLE' else [])
+                thread += [dv.offset_polyline(pts, r) for r in rows]
+                op, _ = d.chain(item.attach_vb, item.attach_va)        # opening edge: hemmed
+                thread.append(dv.offset_polyline(op, 0.012))
         for h in f.hems:
+            if not ft.on(h, "hems", scene):
+                continue
             pts, _ = d.chain(h.va, h.vb)
             if len(pts) < 2 or h.topstitch == 'NONE':
                 continue
@@ -108,6 +128,8 @@ def collect(scene):
         for k, (a, b) in enumerate(d.sews[:len(f.pleats)]):
             thread.append(dv.offset_polyline(a, -0.0015))
         for hw in f.hardware:
+            if not ft.on(hw, ft.hw_category(hw), scene):
+                continue
             if hw.kind == 'ZIPPER':
                 path = ft.zipper_path(panel, hw)
                 if len(path) < 2:
@@ -127,16 +149,25 @@ def collect(scene):
                 continue
             idx = LIB_KINDS.index(hw.kind) * len(FIN) + FIN.index(hw.finish)
             points.append((xy, idx, hw.size / ft.HW_SIZE[hw.kind]))
+        if ox or oy:     # child panel: move everything it added into its own UV slot
+            sh = lambda pl: [(x + ox, y + oy) for x, y in pl]
+            thread[mark[0]:] = [sh(pl) for pl in thread[mark[0]:]]
+            solid[mark[1]:] = [sh(pl) for pl in solid[mark[1]:]]
+            teeth[mark[2]:] = [sh(pl) for pl in teeth[mark[2]:]]
+            points[mark[3]:] = [((xy[0] + ox, xy[1] + oy), i, sc) for xy, i, sc in points[mark[3]:]]
     for seam in scene.fh_seams:
         if seam.topstitch == 'NONE' or not sewing.seam_ok(seam):
+            continue
+        if not (ft.panel_active(seam.a_obj, scene) and ft.panel_active(seam.b_obj, scene)):
             continue
         sides = {'A': [seam.a_obj], 'B': [seam.b_obj], 'BOTH': [seam.a_obj, seam.b_obj]}[seam.ts_side]
         for panel in sides:
             v0, v1 = (seam.a_v0, seam.a_v1) if panel == seam.a_obj else (seam.b_v0, seam.b_v1)
             d = ft.get_derived(panel)
             pts, _ = d.chain(v0, v1)
+            ox, oy = ft.uv_offset(panel)
             rows = [seam.ts_dist] + ([seam.ts_dist + seam.ts_gap] if seam.topstitch == 'DOUBLE' else [])
-            thread += [dv.offset_polyline(pts, r) for r in rows]
+            thread += [[(x + ox, y + oy) for x, y in dv.offset_polyline(pts, r)] for r in rows]
     if not th.visible:
         thread, solid = [], []
     if not th.show_hardware:

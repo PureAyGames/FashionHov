@@ -71,26 +71,50 @@ def auto_top(avatar, where):
     return m.get("z_neck_base", 0.83 * m.get("height", 1.75))
 
 
+def piece_pattern_xy(piece):
+    """(pattern xy per vertex, raw UV per vertex) of a cloth piece."""
+    me = piece.data
+    uv = me.uv_layers.get("Pattern")
+    raw = np.zeros((len(me.vertices), 2))
+    for loop in me.loops:
+        raw[loop.vertex_index] = uv.data[loop.index].uv
+    return raw - np.array(piece.get("fh_uv_off", (0.0, 0.0))), raw
+
+
+def piece_of(scene, panel):
+    return next((o for o in scene.objects if o.get("fh_cloth_source") == panel.name), None)
+
+
 def wrap_piece(context, piece, panel, avatar, body=None):
-    """Move a flat cloth piece's vertices onto its cylinder around the avatar."""
-    pl = panel.fh_place
+    """Move a flat cloth piece's vertices onto its cylinder around the avatar.
+    Pocket pieces use their parent panel's placement, so they land exactly where
+    they sit on the pattern, just outside the parent."""
+    from .features import owner_of
+    bump = 0.0
+    frame_panel = panel
+    if panel.get("fh_feature_of"):
+        parent, _ = owner_of(panel)
+        if parent is None:
+            return False
+        frame_panel, bump = parent, 0.005
+    pl = frame_panel.fh_place
     if pl.where == 'NONE':
         return False
+    frame_piece = piece if frame_panel == panel else piece_of(context.scene, frame_panel)
+    if frame_piece is None:
+        return False
     body = body or body_slicer(context, avatar)
-    uv = piece.data.uv_layers.get("Pattern")
     me = piece.data
-    # pattern xy per vertex (from UVs)
-    pxy = np.zeros((len(me.vertices), 2))
-    for loop in me.loops:
-        pxy[loop.vertex_index] = uv.data[loop.index].uv
-    x0, y0 = pxy.min(axis=0)
-    x1, y1 = pxy.max(axis=0)
+    pxy, raw = piece_pattern_xy(piece)
+    fxy, _ = piece_pattern_xy(frame_piece) if frame_piece != piece else (pxy, raw)
+    x0, y0 = fxy.min(axis=0)
+    x1, y1 = fxy.max(axis=0)
     cx = (x0 + x1) / 2
     floor = avatar.get("fh_measured", {}).get("z_floor", avatar.matrix_world.translation.z)
     top = floor + pl.top if pl.top > 0 else auto_top(avatar, pl.where)
     zmid = top - (y1 - y0) / 2
     axis, r = axis_and_radius(body, zmid, pl.where)
-    R = r + pl.gap
+    R = r + pl.gap + bump
     th0 = math.radians(ANGLE[pl.where])
     u = pxy[:, 0] - cx
     if pl.mirror:
@@ -101,7 +125,7 @@ def wrap_piece(context, piece, panel, avatar, body=None):
     from .core.geometry import point_in_polygon
     for poly in piece.get("fh_intake", []):
         poly = [tuple(p) for p in poly]
-        inside = np.array([point_in_polygon(tuple(p), poly) for p in pxy])
+        inside = np.array([point_in_polygon(tuple(p), poly) for p in raw])
         Rv[inside] -= min(0.01, pl.gap * 0.5)
     world = np.column_stack([axis[0] + Rv * np.cos(th), axis[1] + Rv * np.sin(th), top - (y1 - pxy[:, 1])])
     piece.matrix_world = Matrix.Identity(4)
@@ -114,7 +138,7 @@ def wrap_piece(context, piece, panel, avatar, body=None):
 
 # ---------- garment assembly ----------
 
-def boundary_on_chain(piece, chain_pts, tol=0.002):
+def boundary_on_chain(piece, chain_pts, tol=0.002, world=True):
     """Vertices of a piece lying on a 2D pattern chain (outline or internal line, e.g.
     the line under a fly), sorted along it. Returns [(vertex_index, t)], t = 0..1
     sewn arc position (jump segments count as zero length)."""
@@ -123,6 +147,9 @@ def boundary_on_chain(piece, chain_pts, tol=0.002):
     pxy = {}
     for loop in me.loops:
         pxy[loop.vertex_index] = tuple(uv.data[loop.index].uv)
+    if world:   # chain given in pattern (world) space: move it into this piece's UV slot
+        ox, oy = piece.get("fh_uv_off", (0.0, 0.0))
+        chain_pts = sewing.Poly([(x + ox, y + oy) for x, y in chain_pts], getattr(chain_pts, "jumps", ()))
     xs = [p[0] for p in chain_pts]
     ys = [p[1] for p in chain_pts]
     x0, x1, y0, y1 = min(xs) - tol, max(xs) + tol, min(ys) - tol, max(ys) + tol
@@ -166,8 +193,17 @@ def match_sides(side_a, side_b):
     return pairs
 
 
-def pieces_for(scene):
-    return [o for o in scene.objects if o.get("fh_cloth_source") and o.type == 'MESH' and o.name != GARMENT]
+def pieces_for(scene, simulated_only=True):
+    from .features import panel_simulated
+    out = []
+    for o in scene.objects:
+        if not o.get("fh_cloth_source") or o.type != 'MESH' or o.name == GARMENT:
+            continue
+        src = bpy.data.objects.get(o["fh_cloth_source"])
+        if src is None or (simulated_only and not panel_simulated(src, scene)):
+            continue
+        out.append(o)
+    return out
 
 
 def build_garment(context):
@@ -209,9 +245,37 @@ def build_garment(context):
         for a, b in p.get("fh_sews", []):
             a = [tuple(x) for x in a]
             b = [tuple(x) for x in b]
-            sa = [(i + offset[p.name], t) for i, t in boundary_on_chain(p, a)]
-            sb = [(i + offset[p.name], t) for i, t in boundary_on_chain(p, b)]
+            sa = [(i + offset[p.name], t) for i, t in boundary_on_chain(p, a, world=False)]
+            sb = [(i + offset[p.name], t) for i, t in boundary_on_chain(p, b, world=False)]
             sew_edges += [e for e in match_sides(sa, sb) if e[0] != e[1]]
+
+    # Pockets: sew each pocket's attached edges straight onto its parent piece,
+    # at the same spot in pattern space.
+    from mathutils.kdtree import KDTree
+    from .features import owner_of, get_derived
+    for p in pieces:
+        panel = bpy.data.objects.get(p["fh_cloth_source"])
+        if not panel or not panel.get("fh_feature_of"):
+            continue
+        parent, item = owner_of(panel)
+        ppiece = by_panel.get(parent.name) if parent else None
+        if not ppiece or not hasattr(item, "attach_va"):
+            continue
+        d = get_derived(panel)
+        chain_pts, jumps = d.chain(item.attach_va, item.attach_vb)
+        if len(chain_pts) < 2:
+            continue
+        mine = boundary_on_chain(p, sewing.Poly(chain_pts, jumps))
+        pxy_parent, _ = piece_pattern_xy(ppiece)
+        kd = KDTree(len(pxy_parent))
+        for i, (x, y) in enumerate(pxy_parent):
+            kd.insert((x, y, 0.0), i)
+        kd.balance()
+        cxy, _ = piece_pattern_xy(p)
+        for i, _ in mine:
+            _, j, dist = kd.find((cxy[i][0], cxy[i][1], 0.0))
+            if dist < 0.01:
+                sew_edges.append((i + offset[p.name], j + offset[ppiece.name]))
 
     me = bpy.data.meshes.new(GARMENT)
     me.from_pydata(verts, sew_edges, faces)
@@ -311,7 +375,9 @@ class FH_OT_arrange(bpy.types.Operator):
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
         n = 0
-        for piece in pieces_for(context.scene):
+        ps = pieces_for(context.scene)
+        ps.sort(key=lambda o: bool(bpy.data.objects[o["fh_cloth_source"]].get("fh_feature_of")))
+        for piece in ps:          # parents before their pockets
             panel = bpy.data.objects.get(piece["fh_cloth_source"])
             if panel and wrap_piece(context, piece, panel, avatar, body):
                 n += 1

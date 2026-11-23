@@ -101,6 +101,7 @@ def seam_geometry(seam):
 LINE_COLORS = {
     "dart_leg": (1.0, 0.35, 0.3, 1), "pleat_fold": (0.4, 0.7, 1.0, 1), "pleat_inner": (0.4, 0.7, 1.0, 0.5),
     "pleat_stitch": (0.4, 0.7, 1.0, 0.8), "fly_fold": (0.75, 0.5, 1.0, 1), "fly_stitch": (1.0, 0.6, 0.2, 1),
+    "pocket_place": (1.0, 0.65, 0.25, 0.6), "pocket_opening": (1.0, 0.65, 0.25, 1),
 }
 
 
@@ -112,8 +113,9 @@ def draw_features():
     from . import features as ft
     scene = bpy.context.scene
     show_sa = scene.fh.show_allowance
-    for panel in panels(scene):
-        if panel.get("fh_graded_of") or not panel.visible_get():
+    from .util import active_panels
+    for panel in active_panels(scene):
+        if not panel.visible_get():
             continue
         d = ft.get_derived(panel)
         if d is None:
@@ -126,11 +128,15 @@ def draw_features():
             col = LINE_COLORS.get(line["kind"], (1, 1, 1, 0.7))
             _lines([(x, y, z) for x, y in line["pts"]], col, 1.5)
         for h in f.hems:
+            if not ft.on(h, "hems", scene):
+                continue
             pts, _ = d.chain(h.va, h.vb)
             _lines([(x, y, z) for x, y in pts], (0.3, 0.9, 0.4, 1), 4.0)
             _lines([(x, y, z) for x, y in dv.offset_polyline(pts, max(h.width - 0.003, 0.0015))],
                    (0.3, 0.9, 0.4, 0.6), 1.0)
         for hw in f.hardware:
+            if not ft.on(hw, ft.hw_category(hw), scene):
+                continue
             if hw.kind == 'ZIPPER':
                 path = ft.zipper_path(panel, hw)
                 _lines([(x, y, z) for x, y in path], (0.75, 0.75, 0.75, 1), 6.0)

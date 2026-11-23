@@ -45,3 +45,9 @@ def world_outline(obj):
 
 def panels(scene):
     return [o for o in scene.objects if o.get("fh_panel") and o.type == 'MESH']
+
+
+def active_panels(scene):
+    """Panels currently in play: no graded copies, no child panels whose detail is off."""
+    from .features import panel_active
+    return [o for o in panels(scene) if not o.get("fh_graded_of") and panel_active(o, scene)]

@@ -156,17 +156,27 @@ class Derived:
         self.shifts = []       # [(P, tdir, amount)] pleat spreads, in order
 
     # point mapping through the pleat spreads
+    @staticmethod
+    def _amount(shift, p):
+        P, t, n, amt, taper = shift
+        if taper <= 0:
+            return amt
+        h = dot(sub(p, P), n)          # depth into the panel; unchanged by the spread
+        return amt * min(max(1.0 - h / taper, 0.0), 1.0)
+
     def map_point(self, p):
-        for P, t, amt in self.shifts:
-            if dot(sub(p, P), t) > 0:
-                p = add(p, mul(t, amt))
+        for sh in self.shifts:
+            if dot(sub(p, sh[0]), sh[1]) > 0:
+                p = add(p, mul(sh[1], self._amount(sh, p)))
         return p
 
     def unmap_point(self, p):
-        for P, t, amt in reversed(self.shifts):
+        for sh in reversed(self.shifts):
+            P, t = sh[0], sh[1]
             s = dot(sub(p, P), t)
-            if s > amt:
-                p = sub(p, mul(t, amt))
+            a = self._amount(sh, p)
+            if s > a:
+                p = sub(p, mul(t, a))
             elif s > 0:
                 p = sub(p, mul(t, s))
         return p
@@ -215,11 +225,16 @@ def _edge_frame(base, va, vb):
 
 
 def _apply_pleat(d, pl, base):
+    """Slash and spread. taper = 0: the spread runs the full length of the panel.
+    taper > 0: the pleat pivots to nothing at that depth (like trouser front pleats)."""
     a, b, tdir, ndir = _edge_frame(base, pl["va"], pl["vb"])
     P = d.map_point(lerp(a, b, pl["t"]))
     depth = pl["depth"]
     kind = pl.get("kind", "KNIFE")
     intake = 4 * depth if kind in ("BOX", "INVERTED") else 2 * depth
+    taper = max(pl.get("taper", 0.0), 0.0)
+    shift = (P, tdir, ndir, intake, taper)
+    amount = lambda x: Derived._amount(shift, x)
     pts = d.sew
     n = len(pts)
     s = [dot(sub(p.xy, P), tdir) for p in pts]
@@ -231,40 +246,59 @@ def _apply_pleat(d, pl, base):
         if (si <= 0 < sq) or (sq <= 0 < si):
             u = si / (si - sq)
             x = lerp(p.xy, q.xy, u)
+            amt = amount(x)
+            if amt < 1e-7:              # beyond the taper's pivot: nothing to open here
+                continue
             first, second = (Pt(x, None, ("pleat", pl["id"], "L")),
-                             Pt(add(x, mul(tdir, intake)), None, ("pleat", pl["id"], "R")))
-            if si > 0:          # walking from + side back to - side
+                             Pt(add(x, mul(tdir, amt)), None, ("pleat", pl["id"], "R")))
+            if si > 0:                  # walking from + side back to - side
                 first, second = second, first
             new += [first, second]
             crossings.append((len(new) - 2, x))
     for p in new:
         if p.tag is None or p.tag[0] != "pleat" or p.tag[1] != pl["id"]:
             if dot(sub(p.xy, P), tdir) > 1e-12:
-                p.xy = add(p.xy, mul(tdir, intake))
-    # jumps: the new intake segments; existing jumps must be re-indexed
+                p.xy = add(p.xy, mul(tdir, amount(p.xy)))
     old_jump_pts = {id(pts[i]) for i in d.jumps}
     d.sew = new
     d.jumps = {i for i, p in enumerate(new) if id(p) in old_jump_pts}
     for idx, _ in crossings:
         d.jumps.add(idx)
-    d.shifts.append((P, tdir, intake))
-    # markings + tacks
-    if len(crossings) >= 2:
-        start = min(crossings, key=lambda c: math.dist(c[1], P))[1]
-        far = max(crossings, key=lambda c: math.dist(c[1], P))[1]
-        steps = 4 if intake == 4 * depth else 2
-        for k in range(steps + 1):
-            off = mul(tdir, depth * k)
-            kind_line = "pleat_fold" if k in (0, steps) else "pleat_inner"
-            d.lines.append({"kind": kind_line, "id": pl["id"], "pts": [add(start, off), add(far, off)]})
-        down = norm(sub(far, start))
-        stitch = max(pl.get("stitch", 0.0), 0.003)
-        a0, b0 = start, add(start, mul(tdir, intake))
-        d.sews.append(([a0, add(a0, mul(down, stitch))], [b0, add(b0, mul(down, stitch))]))
-        d.intake.append([start, add(start, mul(tdir, intake)), add(far, mul(tdir, intake)), far])
-        if stitch > 0.004:
-            d.lines.append({"kind": "pleat_stitch", "id": pl["id"],
-                            "pts": [add(a0, mul(down, stitch)), add(b0, mul(down, stitch))]})
+    d.shifts.append(shift)
+    if not crossings:
+        return
+    start = min(crossings, key=lambda c: math.dist(c[1], P))[1]
+    # far end of the pleat lines: the opposite crossing, or the taper's pivot point
+    far_cross = [c[1] for c in crossings if math.dist(c[1], start) > 1e-9]
+    ray_far = None
+    for i in range(n):
+        p0, p1 = pts[i].xy, pts[(i + 1) % n].xy
+        if (dot(sub(p0, P), tdir) <= 0 < dot(sub(p1, P), tdir)) or (dot(sub(p1, P), tdir) <= 0 < dot(sub(p0, P), tdir)):
+            si_, sq_ = dot(sub(p0, P), tdir), dot(sub(p1, P), tdir)
+            x = lerp(p0, p1, si_ / (si_ - sq_))
+            if math.dist(x, start) > 1e-9:
+                ray_far = x
+    far = far_cross[0] if far_cross else ray_far
+    if far is None:
+        return
+    down = norm(sub(far, start))
+    full = math.dist(start, far)
+    tapered = 0 < taper < full
+    end = add(start, mul(down, taper)) if tapered else far
+    steps = 4 if intake == 4 * depth else 2
+    for k in range(steps + 1):
+        off = mul(tdir, depth * k)
+        kind_line = "pleat_fold" if k in (0, steps) else "pleat_inner"
+        d.lines.append({"kind": kind_line, "id": pl["id"],
+                        "pts": [add(start, off), end if tapered else add(far, off)]})
+    stitch = min(max(pl.get("stitch", 0.0), 0.003), (taper if tapered else full) * 0.9)
+    a0, b0 = start, add(start, mul(tdir, intake))
+    b_dir = norm(sub(end, b0)) if tapered else down
+    d.sews.append(([a0, add(a0, mul(down, stitch))], [b0, add(b0, mul(b_dir, stitch))]))
+    d.intake.append([start, b0, end] if tapered else [start, b0, add(far, mul(tdir, intake)), far])
+    if stitch > 0.004:
+        d.lines.append({"kind": "pleat_stitch", "id": pl["id"],
+                        "pts": [add(a0, mul(down, stitch)), add(b0, mul(b_dir, stitch))]})
 
 
 def _insert_at(d, i, frac, pt):
@@ -371,51 +405,117 @@ def _apply_fly(d, fl):
     return {"id": fl["id"], "ext": [p0] + ext + curve + [p2], "jstitch": jstitch_in + jcurve, "seg": seg}
 
 
-def derive(base, darts=(), pleats=(), flies=()):
+def _apply_inner_dart(d, dt):
+    """Fisheye (double-ended) dart fully inside the panel: a diamond whose two
+    sides get sewn together. Cut out for the simulation, drawn as legs on paper."""
+    c = d.map_point(dt["c"])
+    u = rot((0.0, 1.0), dt.get("angle", 0.0))
+    w = (u[1], -u[0])
+    top = add(c, mul(u, dt["up"]))
+    bot = sub(c, mul(u, dt["down"]))
+    lft = sub(c, mul(w, dt["width"] / 2))
+    rgt = add(c, mul(w, dt["width"] / 2))
+    d.holes.append([top, lft, bot, rgt])
+    for a, b in ((top, lft), (lft, bot), (top, rgt), (rgt, bot)):
+        d.lines.append({"kind": "dart_leg", "id": dt["id"], "pts": [a, b]})
+    d.sews.append(([top, lft, bot], [top, rgt, bot]))
+
+
+def _arc_from(d, i, dist, step):
+    """Walk the sew line from index i by dist (step=+1 forward, -1 backward): xy."""
+    n = len(d.sew)
+    acc, k = 0.0, i
+    while True:
+        j = (k + step) % n
+        L = math.dist(d.sew[k].xy, d.sew[j].xy)
+        if acc + L >= dist or j == i:
+            t = 0.0 if L == 0 else min((dist - acc) / L, 1.0)
+            return lerp(d.sew[k].xy, d.sew[j].xy, t)
+        acc += L
+        k = j
+
+
+def _apply_scoop(d, sc):
+    """Front scoop pocket opening at a corner: the panel is cut along a curve
+    (pattern + export), while the simulation keeps the fabric there (the pocket
+    facing sits right behind it). Returns the replacement curve."""
+    i = d.index_of_vid(sc["corner"])
+    if i is None:
+        return None
+    c = d.sew[i].xy
+    A = _arc_from(d, i, sc["width"], -1)
+    B = _arc_from(d, i, sc["depth"], +1)
+    mid = lerp(A, B, 0.5)
+    ctrl = add(mid, mul(sub(mid, c), sc.get("curve", 0.35)))
+    curve = [A] + bezier(A, ctrl, B, 10) + [B]
+    _split_at(d, A, ("scoop", sc["id"], "start"))
+    _split_at(d, B, ("scoop", sc["id"], "end"))
+    d.lines.append({"kind": "pocket_opening", "id": sc["id"], "pts": curve})
+    return {"id": sc["id"], "ext": curve, "corner": c, "A": A, "B": B}
+
+
+def _walk(d, excursions, apexes):
+    """Build an outline from the sew line, replacing each excursion span
+    (start mark -> end mark) with its points; optionally adding dart apexes."""
+    n = len(d.sew)
+    starts = {}
+    ends = {}
+    for kind, ex in excursions:
+        si = next((k for k, p in enumerate(d.sew) if (kind, ex["id"], "start") in p.marks), None)
+        ei = next((k for k, p in enumerate(d.sew) if (kind, ex["id"], "end") in p.marks), None)
+        if si is not None and ei is not None:
+            starts[si] = (ei, ex["ext"])
+            ends[ei] = si
+    # start somewhere that isn't inside an excursion
+    inside = set()
+    for si, (ei, _) in starts.items():
+        k = (si + 1) % n
+        while k != ei:
+            inside.add(k)
+            k = (k + 1) % n
+    s0 = next((k for k in range(n) if k not in inside and k not in ends), 0)
+    out = []
+    edge_vid = d.edge_of(s0)
+    k, steps = s0, 0
+    while steps < n:
+        p = d.sew[k]
+        if p.vid is not None:
+            edge_vid = p.vid
+        if k in starts:
+            ei, pts = starts[k]
+            for q in pts[:-1]:
+                out.append((q, edge_vid))
+            jump = (ei - k) % n
+            k, steps = ei, steps + jump
+            continue
+        out.append((p.xy, edge_vid))
+        if apexes is not None:
+            for m in p.marks:
+                if m[0] == "dart" and m[2] == "leg1":
+                    out.append((apexes[m[1]], edge_vid))
+        k, steps = (k + 1) % n, steps + 1
+    return out
+
+
+def derive(base, darts=(), pleats=(), flies=(), inner_darts=(), scoops=()):
     """base: [(vid, (x, y))] CCW. Returns Derived."""
     d = Derived()
+    d.holes = []
     d.sew = [Pt(xy, vid) for vid, xy in base]
     for pl in sorted(pleats, key=lambda p: (p["va"], -p["t"])):
         _apply_pleat(d, pl, base)
     apexes = {}
     for dt in darts:
         apexes[dt["id"]] = _apply_dart(d, dt, base)
+    for dt in inner_darts:
+        _apply_inner_dart(d, dt)
     fl_out = [f for f in (_apply_fly(d, fl) for fl in flies) if f]
-    d.flies = fl_out
+    sc_out = [x for x in (_apply_scoop(d, sc) for sc in scoops) if x]
+    d.flies, d.scoops = fl_out, sc_out
     for f in fl_out:
         d.lines.append({"kind": "fly_stitch", "id": f["id"], "pts": f["jstitch"]})
-
-    # cut / export outlines: walk the sew line, add dart apexes (cut only) and fly extensions
-    n = len(d.sew)
-    fly_start = {f["id"]: f for f in fl_out}
-    cut, export = [], []
-    i = 0
-    skipping = None
-    edge_vid = d.edge_of(0)
-    while i < n:
-        p = d.sew[i]
-        if p.vid is not None:
-            edge_vid = p.vid
-        if skipping:
-            if ("fly", skipping, "end") in p.marks:
-                skipping = None
-            else:
-                i += 1
-                continue
-        start = next((m for m in p.marks if m[0] == "fly" and m[2] == "start" and m[1] in fly_start), None)
-        if start:
-            for q in fly_start[start[1]]["ext"][:-1]:
-                cut.append(q)
-                export.append((q, edge_vid))
-            skipping = start[1]
-            i += 1
-            continue
-        cut.append(p.xy)
-        export.append((p.xy, edge_vid))
-        for m in p.marks:
-            if m[0] == "dart" and m[2] == "leg1":
-                cut.append(apexes[m[1]])
-        i += 1
-    d.cut = cut
-    d.export = export
+    # simulation outline: fly extensions + dart wedges cut out (scoops stay: facing fills them)
+    d.cut = [p for p, _ in _walk(d, [("fly", f) for f in fl_out], apexes)]
+    # paper pattern outline: fly extensions + scoop curves, darts drawn as legs
+    d.export = _walk(d, [("fly", f) for f in fl_out] + [("scoop", x) for x in sc_out], None)
     return d

@@ -13,19 +13,21 @@ import blf
 import gpu
 from gpu_extras.batch import batch_for_shader
 from bpy_extras.view3d_utils import location_3d_to_region_2d
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 from . import features as ft
 from .core import derive as dv
 from .core import geometry as geo
-from .util import mouse_to_plane, panels, fmt_len
+from .util import mouse_to_plane, fmt_len, active_panels
 
-KINDS = [('DART', "Dart", "", 'MOD_TRIANGULATE', 0), ('PLEAT', "Pleat", "", 'MOD_SOLIDIFY', 1),
+KINDS = [('POCKET', "Pocket", "", 'MOD_BOOLEAN', 10), ('DART', "Dart", "", 'MOD_TRIANGULATE', 0),
+         ('INNER_DART', "Fisheye Dart", "", 'MOD_SMOOTH', 11), ('PLEAT', "Pleat", "", 'MOD_SOLIDIFY', 1),
          ('HEM', "Hem", "", 'MOD_EDGESPLIT', 2), ('ZIPPER', "Zipper", "", 'ALIGN_JUSTIFY', 3),
          ('BUTTON_SHANK', "Jeans Button", "", 'RADIOBUT_ON', 4), ('BUTTON', "Button", "", 'RADIOBUT_OFF', 5),
          ('RIVET', "Rivet", "", 'DOT', 6), ('SNAP', "Snap", "", 'SNAP_FACE_CENTER', 7),
          ('GROMMET', "Grommet", "", 'MESH_CIRCLE', 8), ('BUTTONHOLE', "Buttonhole", "", 'REMOVE', 9)]
 EDGE_KINDS = {'DART', 'PLEAT', 'HEM', 'ZIPPER'}
+POINT_FEATURES = {'INNER_DART', 'POCKET'}
 HOVER_PX = 16
 
 
@@ -42,6 +44,11 @@ class FHToolSettings(bpy.types.PropertyGroup):
     hem_width: bpy.props.FloatProperty(name="Hem Width", default=0.02, min=0.003, max=0.15,
                                        subtype='DISTANCE', unit='LENGTH')
     zip_style: bpy.props.EnumProperty(name="Zip Style", items=ft.ZIP_STYLES)
+    pocket_kind: bpy.props.EnumProperty(name="Pocket", items=ft.POCKET_KINDS)
+    pocket_rivets: bpy.props.BoolProperty(name="Rivets", default=True,
+                                          description="Add rivets at the pocket corners (jeans style)")
+    pleat_taper: bpy.props.FloatProperty(name="Taper", default=0.0, min=0.0, max=2.0, subtype='DISTANCE',
+                                         unit='LENGTH', description="0 = full length")
     finish: bpy.props.EnumProperty(name="Finish", items=ft.FINISHES)
 
 
@@ -63,8 +70,8 @@ def _seg_px_dist(m, a, b):
 def hover_edge(context, mouse, only=None):
     """Nearest panel edge under the mouse: (panel, va, vb, t_on_base_edge, world_xy) or None."""
     best = None
-    for panel in panels(context.scene):
-        if panel.get("fh_graded_of") or not panel.visible_get() or (only and panel != only):
+    for panel in active_panels(context.scene):
+        if not panel.visible_get() or (only and panel != only):
             continue
         d = ft.get_derived(panel)
         if not d:
@@ -110,9 +117,22 @@ def items_world(panel):
     f = panel.fh_features
     out = []
     for x in f.darts:
+        if x.mode == 'INNER':
+            out.append(('INNER_DART', x, ft.hardware_world(panel, x)))
+            continue
         p = edge_marker(panel, x.va, x.vb, x.t)
         if p:
             out.append(('DART', x, p))
+    for x in f.pockets:
+        if x.kind == 'SCOOP':
+            d = ft.get_derived(panel)
+            sc = next((s for s in (d.scoops if d else []) if s["id"] == x.id), None)
+            if sc:
+                out.append(('POCKET', x, sc["ext"][len(sc["ext"]) // 2]))
+        elif x.piece:
+            pts = [p for _, p in ft.base_outline(x.piece)]
+            if pts:
+                out.append(('POCKET', x, (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))))
     for x in f.pleats:
         p = edge_marker(panel, x.va, x.vb, x.t)
         if p:
@@ -134,8 +154,8 @@ def items_world(panel):
 
 def hover_item(context, mouse):
     best = None
-    for panel in panels(context.scene):
-        if panel.get("fh_graded_of") or not panel.visible_get():
+    for panel in active_panels(context.scene):
+        if not panel.visible_get():
             continue
         z = panel.matrix_world.translation.z
         for kind, item, xy in items_world(panel):
@@ -148,9 +168,11 @@ def hover_item(context, mouse):
     return best[1:] if best else None
 
 
-def panel_under(context, event):
-    for panel in panels(context.scene):
-        if panel.get("fh_graded_of") or not panel.visible_get():
+def panel_under(context, event, top_level=False):
+    # children (pockets) first so hardware lands on the pocket when you click on it
+    ps = sorted(active_panels(context.scene), key=lambda o: not o.get("fh_feature_of"))
+    for panel in ps:
+        if not panel.visible_get() or (top_level and panel.get("fh_feature_of")):
             continue
         p = mouse_to_plane(context, event, panel.matrix_world.translation.z)
         d = ft.get_derived(panel)
@@ -160,10 +182,12 @@ def panel_under(context, event):
 
 
 def remove_item(panel, kind, item):
+    from .pockets import delete_item_children
     f = panel.fh_features
-    for coll in (f.darts, f.pleats, f.hems, f.hardware):
+    for coll in (f.darts, f.pleats, f.hems, f.hardware, f.pockets):
         for i, x in enumerate(coll):
             if x == item:
+                delete_item_children(x)
                 coll.remove(i)
                 ft.request_rebuild(panel)
                 return True
@@ -198,6 +222,8 @@ class FH_OT_tool(bpy.types.Operator):
     def _status(self, context):
         k = dict((a, b) for a, b, *_ in KINDS)[context.scene.fh_tool.kind]
         where = "click an edge" if context.scene.fh_tool.kind in EDGE_KINDS else "click on a panel"
+        if context.scene.fh_tool.kind == 'POCKET' and context.scene.fh_tool.pocket_kind == 'SCOOP':
+            where = "click near a corner"
         context.workspace.status_text_set(
             f"Adding: {k} ({where})  •  drag items to move  •  X: delete  •  Tab: next type  •  "
             "Middle mouse / wheel: navigate  •  Enter / Esc / Right-click: done")
@@ -236,12 +262,21 @@ class FH_OT_tool(bpy.types.Operator):
             h = hover_item(context, self.mouse)
             if h:
                 self.drag = h
+                p = mouse_to_plane(context, event, h[0].matrix_world.translation.z)
+                self.drag_from = (p.x, p.y) if p else None
             else:
                 self._add(context, event)
         elif event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
             if self.drag:
-                ft.request_rebuild(self.drag[0])
-                self.touched.add(self.drag[0].name)
+                panel, kind, item = self.drag
+                if kind == 'ZIPPER' and item.style == 'FLY':
+                    from .pockets import add_fly_shield
+                    ft.invalidate(panel)
+                    add_fly_shield(context, panel, item)
+                if kind == 'POCKET' and getattr(item, "piece", None):
+                    ft.request_rebuild(item.piece)
+                ft.request_rebuild(panel)
+                self.touched.add(panel.name)
             self.drag = None
         elif event.type in {'RET', 'NUMPAD_ENTER', 'ESC', 'RIGHTMOUSE'} and event.value == 'PRESS':
             self._end(context)
@@ -264,7 +299,7 @@ class FH_OT_tool(bpy.types.Operator):
             elif kind == 'PLEAT':
                 x = f.pleats.add()
                 x.id, x.va, x.vb, x.t = ft.new_id(panel), va, vb, t
-                x.depth, x.kind = ts.pleat_depth, ts.pleat_kind
+                x.depth, x.kind, x.taper = ts.pleat_depth, ts.pleat_kind, ts.pleat_taper
             elif kind == 'HEM':
                 for i, h in enumerate(f.hems):
                     if h.va == va:
@@ -288,6 +323,37 @@ class FH_OT_tool(bpy.types.Operator):
             self.drag = (panel, kind, x)
             self.touched.add(panel.name)
             ft.invalidate(panel)
+        elif kind == 'INNER_DART':
+            hit = panel_under(context, event, top_level=True)
+            if not hit:
+                return
+            panel, xy = hit
+            x = panel.fh_features.darts.add()
+            x.id, x.mode = ft.new_id(panel), 'INNER'
+            x.width, x.length, x.down = ts.dart_width, ts.dart_length, ts.dart_length * 0.8
+            ft.set_hardware_world(panel, x, xy)
+            self.drag = (panel, 'INNER_DART', x)
+            self.touched.add(panel.name)
+        elif kind == 'POCKET':
+            from . import pockets
+            hit = panel_under(context, event, top_level=True)
+            if ts.pocket_kind == 'SCOOP':
+                if not hit:
+                    e = hover_edge(context, self.mouse)
+                    if not e:
+                        return
+                    hit = (e[0], e[4])
+                panel, xy = hit
+                pockets.add_scoop_pocket(context, panel, pockets.nearest_corner(panel, xy), ts.pocket_rivets)
+            else:
+                if not hit:
+                    return
+                panel, xy = hit
+                item = pockets.add_patch_pocket(context, panel, xy, ts.pocket_kind,
+                                                ts.pocket_rivets and ts.pocket_kind == 'JEANS')
+                self.drag = (panel, 'POCKET', item)
+                self.drag_from = xy
+            self.touched.add(panel.name)
         else:
             hit = panel_under(context, event)
             if not hit:
@@ -358,6 +424,14 @@ class FH_OT_tool(bpy.types.Operator):
             self._extend_zip_chain(panel, item)
         elif kind in ('HEM',):
             return
+        elif kind == 'POCKET':
+            p = mouse_to_plane(context, event, panel.matrix_world.translation.z)
+            if p is None or item.kind == 'SCOOP' or not item.piece or not getattr(self, "drag_from", None):
+                return
+            dx, dy = p.x - self.drag_from[0], p.y - self.drag_from[1]
+            self.drag_from = (p.x, p.y)
+            item.piece.matrix_world = Matrix.Translation((dx, dy, 0)) @ item.piece.matrix_world
+            context.view_layer.update()
         else:
             p = mouse_to_plane(context, event, panel.matrix_world.translation.z)
             if p:
@@ -385,6 +459,9 @@ class FH_OT_tool(bpy.types.Operator):
                     gpu.state.point_size_set(1)
                 label = {"DART": "Click: add dart", "PLEAT": "Click: add pleat", "HEM": "Click: hem this edge",
                          "ZIPPER": "Click and drag along the edge: zipper"}[ts.kind]
+        elif not self.drag and ts.kind == 'POCKET':
+            label = ("Click near a corner: front scoop pocket" if ts.pocket_kind == 'SCOOP'
+                     else "Click on a panel: add pocket (then drag it)")
         elif self.drag and self.drag[1] == 'ZIPPER':
             label = f"Zip length {fmt_len(context, self.drag[2].length)}"
         elif not self.drag:
@@ -407,8 +484,11 @@ class FH_OT_feature_remove(bpy.types.Operator):
     index: bpy.props.IntProperty()
 
     def execute(self, context):
+        from .pockets import delete_item_children
         panel = context.active_object
-        getattr(panel.fh_features, self.coll).remove(self.index)
+        coll = getattr(panel.fh_features, self.coll)
+        delete_item_children(coll[self.index])
+        coll.remove(self.index)
         ft.request_rebuild(panel)
         return {'FINISHED'}
 

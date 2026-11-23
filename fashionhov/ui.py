@@ -108,22 +108,68 @@ def _tool_grid(layout):
         grid.operator("fashionhov.tool", text=label, icon=icon).kind = ident
 
 
+STACK_ICONS = {"darts": 'MOD_TRIANGULATE', "pleats": 'MOD_SOLIDIFY', "hems": 'MOD_EDGESPLIT',
+               "hardware": 'RADIOBUT_ON', "pockets": 'MOD_BOOLEAN'}
+
+
+def _item_title(coll, it, i):
+    if coll == "darts":
+        return ("Fisheye Dart" if it.mode == 'INNER' else "Dart") + f" {i + 1}"
+    if coll == "pleats":
+        return f"{it.kind.title()} Pleat {i + 1}" + (" (tapered)" if it.taper > 0 else "")
+    if coll == "hems":
+        return f"Hem {i + 1}"
+    if coll == "pockets":
+        from .features import POCKET_KINDS
+        return dict((a, b) for a, b, _ in POCKET_KINDS)[it.kind]
+    return it.kind.replace("_", " ").title() + (f" ({it.style.title()})" if it.kind == 'ZIPPER' else "")
+
+
+def _item_fields(coll, it):
+    if coll == "darts":
+        return ("t", "width", "length", "angle") if it.mode == 'EDGE' else ("width", "length", "down", "angle")
+    if coll == "pleats":
+        return ("kind", "t", "depth", "taper", "stitch")
+    if coll == "hems":
+        return ("fold", "width", "turn", "topstitch") if it.fold == 'DOUBLE' else ("fold", "width", "topstitch")
+    if coll == "pockets":
+        return ("topstitch", "in_sim") if it.kind != 'SCOOP' else ("width", "depth", "curve", "topstitch")
+    if it.kind == 'ZIPPER':
+        f = ("style", "start", "length", "finish", "pull_at_start")
+        return f + (("fly_width",) if it.style == 'FLY' else ())
+    if it.kind == 'BUTTONHOLE':
+        return ("size", "angle")
+    return ("size", "finish")
+
+
 class FH_PT_details(Sub, bpy.types.Panel):
-    bl_label = "Details: Darts, Pleats, Hems, Hardware"
+    bl_label = "Details (modifiers)"
 
     def draw(self, context):
         ts = context.scene.fh_tool
+        sh = context.scene.fh_show
         col = self.layout.column()
+
+        box = col.box()
+        box.label(text="Show on all panels (nothing is deleted):", icon='HIDE_OFF')
+        g = box.grid_flow(columns=3, even_columns=True, align=True)
+        for k in ("pockets", "darts", "pleats", "hems", "zippers", "hardware"):
+            g.prop(sh, k, toggle=True)
+
         col.label(text="Pick one, then click / drag on your panels:", icon='INFO')
         _tool_grid(col)
         box = col.box()
         box.label(text="Defaults for new items")
+        row = box.row(align=True)
+        row.prop(ts, "pocket_kind", text="")
+        row.prop(ts, "pocket_rivets")
         row = box.row(align=True)
         row.prop(ts, "dart_width", text="Dart W")
         row.prop(ts, "dart_length", text="L")
         row = box.row(align=True)
         row.prop(ts, "pleat_depth", text="Pleat")
         row.prop(ts, "pleat_kind", text="")
+        row.prop(ts, "pleat_taper", text="Taper")
         row = box.row(align=True)
         row.prop(ts, "hem_width", text="Hem")
         row.prop(ts, "zip_style", text="")
@@ -133,43 +179,44 @@ class FH_PT_details(Sub, bpy.types.Panel):
 
         obj = context.active_object
         if not obj or not obj.get("fh_panel"):
-            col.label(text="Select a panel to edit its details")
+            col.label(text="Select a panel to see its detail stack")
             return
+        from .features import owner_of
+        if obj.get("fh_feature_of"):
+            parent, item = owner_of(obj)
+            if parent:
+                row = col.row()
+                row.label(text=f"Part of {parent.name}", icon='LINKED')
+                row.operator("fashionhov.pocket_select", text="Go to Parent").name = parent.name
         f = obj.fh_features
         col.prop(f, "seam_allowance", text="Seam Allowance (-1 = default)")
-        for title, coll, fields in (
-                ("Darts", "darts", ("t", "width", "length", "angle")),
-                ("Pleats", "pleats", ("kind", "t", "depth", "stitch")),
-                ("Hems", "hems", ("fold", "width", "turn", "topstitch")),
-                ("Hardware & Zippers", "hardware", None)):
-            items = getattr(f, coll)
-            if not len(items):
-                continue
-            box = col.box()
-            box.label(text=f"{title} ({len(items)})")
-            for i, it in enumerate(items):
-                sub = box.box()
-                head = sub.row()
-                name = it.kind.replace("_", " ").title() if coll == "hardware" else f"{title[:-1]} {i + 1}"
-                head.label(text=name)
+        stack = col.box()
+        stack.label(text=f"{obj.name}: detail stack", icon='MODIFIER')
+        empty = True
+        for coll in ("pockets", "darts", "pleats", "hems", "hardware"):
+            for i, it in enumerate(getattr(f, coll)):
+                empty = False
+                sub = stack.box()
+                head = sub.row(align=True)
+                head.prop(it, "enabled", text="", icon='HIDE_OFF' if it.enabled else 'HIDE_ON', emboss=False)
+                head.label(text=_item_title(coll, it, i), icon=STACK_ICONS[coll])
+                if coll == "pockets":
+                    for attr in ("piece", "facing", "bag"):
+                        o = getattr(it, attr)
+                        if o:
+                            head.operator("fashionhov.pocket_select", text="", icon='EDITMODE_HLT').name = o.name
+                    head.operator("fashionhov.pocket_reset", text="", icon='FILE_REFRESH').index = i
+                if coll == "hardware" and it.kind == 'ZIPPER' and it.child:
+                    head.operator("fashionhov.pocket_select", text="", icon='EDITMODE_HLT').name = it.child.name
                 op = head.operator("fashionhov.feature_remove", text="", icon='X')
                 op.coll, op.index = coll, i
-                if coll == "hardware":
-                    if it.kind == 'ZIPPER':
-                        fields_ = ("style", "start", "length", "fly_width", "finish", "pull_at_start")
-                        if it.style != 'FLY':
-                            fields_ = tuple(x for x in fields_ if x != "fly_width")
-                    elif it.kind == 'BUTTONHOLE':
-                        fields_ = ("size", "angle")
-                    else:
-                        fields_ = ("size", "finish")
-                else:
-                    fields_ = fields
-                    if coll == "hems" and it.fold != 'DOUBLE':
-                        fields_ = tuple(x for x in fields_ if x != "turn")
-                g = sub.grid_flow(columns=2, even_columns=True, align=True)
-                for fld in fields_:
-                    g.prop(it, fld)
+                if not it.enabled:
+                    continue
+                grid = sub.grid_flow(columns=2, even_columns=True, align=True)
+                for fld in _item_fields(coll, it):
+                    grid.prop(it, fld)
+        if empty:
+            stack.label(text="No details yet: use the buttons above")
 
 
 class FH_PT_thread(Sub, bpy.types.Panel):

@@ -135,6 +135,35 @@ class Features(unittest.TestCase):
         self.assertAlmostEqual(dv.polyline_len(cf, j), 0.6)
         self.assertTrue(any(l["kind"] == "fly_stitch" for l in d.lines))
 
+    def test_tapered_pleat(self):
+        d = dv.derive(self.base, pleats=[dict(id=1, va=3, vb=4, t=0.5, depth=0.02, kind="KNIFE",
+                                              stitch=0.03, taper=0.25)])
+        top = [p[0] for p in d.cut if abs(p[1] - 0.6) < 1e-9]
+        bottom = [p[0] for p in d.cut if abs(p[1]) < 1e-9]
+        self.assertAlmostEqual(max(top) - min(top), 0.54)       # opened 4 cm at the edge
+        self.assertAlmostEqual(max(bottom) - min(bottom), 0.5)  # nothing at the far edge
+        lines = [l for l in d.lines if l["kind"] == "pleat_fold"]
+        self.assertTrue(all(abs(l["pts"][1][1] - 0.35) < 1e-9 for l in lines))   # meet at the pivot
+        for q in [(0.1, 0.55), (0.1, 0.1), (0.45, 0.5)]:
+            r = d.unmap_point(d.map_point(q))
+            self.assertAlmostEqual(r[0], q[0])
+            self.assertAlmostEqual(r[1], q[1])
+
+    def test_fisheye_dart(self):
+        d = dv.derive(self.base, inner_darts=[dict(id=1, c=(0.25, 0.3), width=0.03, up=0.1, down=0.08)])
+        self.assertEqual(len(d.holes), 1)
+        self.assertEqual(d.sew_xy(), [p for _, p in self.base])   # outline untouched
+        a, b = d.sews[0]
+        self.assertAlmostEqual(dv.polyline_len(a), dv.polyline_len(b))
+
+    def test_scoop_pocket(self):
+        d = dv.derive(self.base, scoops=[dict(id=1, corner=3, width=0.12, depth=0.08, curve=0.35)])
+        ex = [p for p, _ in d.export]
+        self.assertNotIn((0.5, 0.6), [tuple(round(c, 9) for c in p) for p in ex])   # paper: corner cut away
+        self.assertIn((0.5, 0.6), [tuple(round(c, 9) for c in p) for p in d.cut])   # sim: fabric stays
+        side, j = d.chain(2, 3)
+        self.assertAlmostEqual(dv.polyline_len(side, j), 0.6)                         # seams unaffected
+
     def test_seam_allowance_offset(self):
         sq = [(0, 0), (1, 0), (1, 1), (0, 1)]
         out = dv.offset_closed(sq, [0.01, 0.02, 0.01, 0.03])
