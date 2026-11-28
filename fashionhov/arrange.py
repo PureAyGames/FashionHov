@@ -373,7 +373,8 @@ def build_garment(context):
     # pocket bag, facing) stack against the body without squeezing through each other.
     cs = mod.collision_settings
     cs.distance_min = 0.0015
-    cs.self_distance_min = 0.001
+    cs.self_distance_min = 0.002
+    cs.self_impulse_clamp = 0.05      # stops a hard squeeze from punching layers through each other
     cs.collision_quality = 5
     st = mod.settings
     st.quality = 10
