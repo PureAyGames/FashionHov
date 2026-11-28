@@ -39,7 +39,7 @@ def _changed(self, context):
     panel = self.id_data
     if isinstance(panel, bpy.types.Object):
         request_rebuild(panel)
-        for attr in ("piece", "facing", "bag", "child"):
+        for attr in ("piece", "facing", "bag", "bag_front", "child"):
             child = getattr(self, attr, None)
             if child:
                 request_rebuild(child)
@@ -108,6 +108,8 @@ class FHHardware(bpy.types.PropertyGroup):
     id: bpy.props.IntProperty()
     enabled: _en()
     child: bpy.props.PointerProperty(type=bpy.types.Object, description="Fly shield piece made for this zipper")
+    shield_sim: bpy.props.BoolProperty(name="Simulate Shield", default=True, update=_changed,
+                                       description="Put the fly shield behind the fly in the simulation")
     kind: bpy.props.EnumProperty(name="Type", items=HW_KINDS + [('ZIPPER', "Zipper", "")], update=_changed)
     x: bpy.props.FloatProperty(update=_changed)    # panel-local, before pleat spreading
     y: bpy.props.FloatProperty(update=_changed)
@@ -139,10 +141,13 @@ class FHPocket(bpy.types.PropertyGroup):
     piece: bpy.props.PointerProperty(type=bpy.types.Object, description="The pocket panel (edit it like any panel)")
     facing: bpy.props.PointerProperty(type=bpy.types.Object, description="Scoop: facing / yoke panel")
     bag: bpy.props.PointerProperty(type=bpy.types.Object, description="Scoop: pocket bag panel")
+    bag_front: bpy.props.PointerProperty(type=bpy.types.Object,
+                                         description="Scoop: front layer of the bag (simulation only)")
     attach_va: bpy.props.IntProperty()
     attach_vb: bpy.props.IntProperty()
     in_sim: bpy.props.BoolProperty(name="Simulate", default=True, update=_changed,
-                                   description="Sew this pocket onto the garment in the simulation")
+                                   description="Include this pocket (and its facing / bag) in the simulation. "
+                                               "Turn off for faster fit checks")
     topstitch: bpy.props.EnumProperty(name="Topstitch", default='DOUBLE', update=_changed, items=[
         ('NONE', "None", ""), ('SINGLE', "Single", ""), ('DOUBLE', "Double", "")])
     # scoop
@@ -243,7 +248,11 @@ def panel_simulated(panel, scene=None):
     if not panel.get("fh_feature_of"):
         return True
     _, item = owner_of(panel)
-    return bool(getattr(item, "in_sim", False)) and item.piece == panel
+    if item is None:
+        return False
+    if hasattr(item, "attach_va"):
+        return bool(item.in_sim)
+    return bool(getattr(item, "shield_sim", False))
 
 
 def uv_offset(panel):
@@ -397,6 +406,8 @@ def sync_children(scene):
         hide = not panel_active(src, scene)
         if o.get("fh_cloth_source"):
             hide = hide or not panel_simulated(src, scene)
+        elif src.get("fh_sim_only"):
+            hide = True                  # simulation-only layer: not part of the paper pattern
         try:
             if o.hide_get() != hide:
                 o.hide_set(hide)
@@ -432,6 +443,13 @@ def flush_now(context):
     names = list(_pending)
     _pending.clear()
     touched = False
+    from . import pockets
+    for name in list(names):          # parents first: keep facing / bag / shield matched to them
+        panel = bpy.data.objects.get(name)
+        if panel and not panel.get("fh_feature_of"):
+            before = {o.name for o in scene.objects if o.get("fh_feature_of") == name}
+            pockets.regenerate(context, panel)
+            names += [n for n in before if n not in names]
     sync_children(scene)
     for name in names:
         panel = bpy.data.objects.get(name)
@@ -462,6 +480,29 @@ def flush_now(context):
 classes = ()
 
 
+_ours = set()      # meshes we just changed ourselves (don't react to our own edits)
+
+
+def mark_ours(obj):
+    _ours.add(obj.name)
+
+
+@bpy.app.handlers.persistent
+def _on_depsgraph(scene, depsgraph):
+    """You reshaped or moved a panel: re-derive it, rebuild its cloth and keep its
+    pocket facing / bag / fly shield matched. No button needed."""
+    for u in depsgraph.updates:
+        obj = u.id.original if hasattr(u.id, "original") else u.id
+        if not isinstance(obj, bpy.types.Object) or not obj.get("fh_panel") or obj.get("fh_graded_of"):
+            continue
+        if not (u.is_updated_geometry or u.is_updated_transform):
+            continue
+        if obj.name in _ours:
+            _ours.discard(obj.name)
+            continue
+        request_rebuild(obj)
+
+
 _CLASSES = (FHDart, FHPleat, FHHem, FHHardware, FHPocket, FHShow, FHFeatures)
 
 
@@ -470,9 +511,13 @@ def register():
         bpy.utils.register_class(c)
     bpy.types.Object.fh_features = bpy.props.PointerProperty(type=FHFeatures)
     bpy.types.Scene.fh_show = bpy.props.PointerProperty(type=FHShow)
+    if _on_depsgraph not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph)
 
 
 def unregister():
+    if _on_depsgraph in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph)
     if bpy.app.timers.is_registered(_flush):
         bpy.app.timers.unregister(_flush)
     del bpy.types.Scene.fh_show

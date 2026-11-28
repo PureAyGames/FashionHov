@@ -15,7 +15,7 @@ simulation, thread, export) without deleting anything.
 
 import math
 import bpy
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 from . import features as ft
 from .core import derive as dv
@@ -34,18 +34,31 @@ def _next_slot(scene):
     return max([o.get("fh_uv_slot", 0) for o in scene.objects] + [0]) + 1
 
 
-def _child_panel(context, parent, pts, name, item_id, sim):
-    """A real panel owned by a detail on `parent`."""
+# start offsets from the parent (outside +, inside -), in the real layer order
+ROLE_BUMP = {'POCKET': 0.005, 'BAG_FRONT': -0.003, 'FACING': -0.006, 'BAG': -0.009, 'SHIELD': -0.004}
+
+
+def _child_panel(context, parent, pts, name, item_id, role, layout=(0.0, 0.0)):
+    """A real panel owned by a detail on `parent`.
+
+    pts are where the piece sits ON the parent (its "home"). Inner pieces
+    (facing, bag, fly shield) are then laid out beside the parent by `layout`
+    so the pattern stays readable, but they still know their home: that's
+    where they go in the simulation, whatever you do to the layout."""
     from .trace import create_panel
     child = create_panel(context, pts, name)
     child["fh_feature_of"] = parent.name
     child["fh_feature_id"] = item_id
     child["fh_uv_slot"] = _next_slot(context.scene)
-    child["fh_sim"] = sim
+    child["fh_role"] = role
+    child["fh_auto_shape"] = [list(p) for p in pts]
     mw = child.matrix_world.copy()
     child.parent = parent
     child.matrix_parent_inverse = parent.matrix_world.inverted()
     child.matrix_world = mw
+    context.view_layer.update()
+    child["fh_home_local"] = list((parent.matrix_world.inverted() @ child.matrix_world).translation)
+    child.matrix_world = Matrix.Translation((layout[0], layout[1], 0)) @ child.matrix_world
     child.fh_grade.girth = parent.fh_grade.girth
     child.fh_grade.length = parent.fh_grade.length
     mat = bpy.data.materials.get("FH Pocket") or bpy.data.materials.new("FH Pocket")
@@ -54,6 +67,47 @@ def _child_panel(context, parent, pts, name, item_id, sim):
     child.data.materials.append(mat)
     context.view_layer.update()
     return child
+
+
+def home_delta(child):
+    """How far a child panel's layout position is from its home on the parent (world XY)."""
+    if child.get("fh_role", "POCKET") == 'POCKET' or "fh_home_local" not in child or child.parent is None:
+        return (0.0, 0.0)
+    home = child.parent.matrix_world @ Vector(child["fh_home_local"])
+    t = child.matrix_world.translation
+    return (t.x - home.x, t.y - home.y)
+
+
+def update_child_shape(context, child, new_pts):
+    """Move a child panel to a freshly generated shape (in parent space), but leave
+    alone every point you moved by hand since it was last generated."""
+    from .sewing import ensure_vids
+    last = [tuple(p) for p in child.get("fh_auto_shape", [])]
+    new_pts = [tuple(p) for p in new_pts]
+    dx, dy = home_delta(child)
+    me = child.data
+    mwi = child.matrix_world.inverted()
+    z = child.matrix_world.translation.z
+    attr = me.attributes.get("fh_vid")
+    if len(last) != len(new_pts) or attr is None:
+        me.clear_geometry()
+        me.from_pydata([tuple(mwi @ Vector((x + dx, y + dy, z))) for x, y in new_pts], [],
+                       [list(range(len(new_pts)))])
+        child["fh_vid_next"] = 1
+        ensure_vids(child)
+    else:
+        mw = child.matrix_world
+        for i, v in enumerate(me.vertices):
+            k = attr.data[i].value - 1          # generated points have vids 1..n in order
+            if not 0 <= k < len(new_pts):
+                continue                         # a point you added: yours
+            w = mw @ v.co
+            if math.dist((w.x - dx, w.y - dy), last[k]) < 1e-5:
+                v.co = mwi @ Vector((new_pts[k][0] + dx, new_pts[k][1] + dy, z))
+        me.update()
+    child["fh_auto_shape"] = [list(p) for p in new_pts]
+    ft.mark_ours(child)
+    ft.invalidate(child)
 
 
 def patch_outline(kind, center):
@@ -74,7 +128,7 @@ def add_patch_pocket(context, parent, center, kind='JEANS', rivets=None):
     item.id = ft.new_id(parent)
     item.kind = kind
     pts = patch_outline(kind, center)
-    child = _child_panel(context, parent, pts, f"{parent.name} {LABELS[kind]}", item.id, True)
+    child = _child_panel(context, parent, pts, f"{parent.name} {LABELS[kind]}", item.id, 'POCKET')
     item.piece = child
     # opening = last vertex -> first vertex; sewn = first -> last (vids 1..n)
     vids = [v for v, _ in ft.base_outline(child)]
@@ -109,13 +163,20 @@ def scoop_shapes(parent, item):
     B2 = dv._arc_from(d, i, item.depth + under, +1)
     inner = dv.offset_polyline(sc["ext"], under)
     facing = [A2, c, B2] + inner[::-1]
+    item["fh_facing_attach"] = [list(p) for p in inner]
     # bag: hangs from the edge after the corner (usually the waist), down past the opening
     n_b = dv.left(dv.norm(dv.sub(B, c)))
     n_a = dv.left(dv.norm(dv.sub(c, A)))
     Bf = dv._arc_from(d, i, item.depth + 0.05, +1)
     Af = dv._arc_from(d, i, item.width + 0.06, -1)
     bag_depth = max(item.width, 0.1) + 0.12
-    bag = [Af, c, Bf, dv.add(Bf, dv.mul(n_b, bag_depth)), dv.add(Af, dv.mul(n_a, 0.05))]
+    D, E = dv.add(Bf, dv.mul(n_b, bag_depth)), dv.add(Af, dv.mul(n_a, 0.05))
+    bag = [Af, c, Bf, D, E]
+    # front layer of the bag: sewn to the opening edge, so it stops at the curve
+    bag_front = [Af] + list(sc["ext"]) + [Bf, D, E]
+    item["fh_bag_front"] = [list(p) for p in bag_front]
+    item["fh_bag_join"] = [list(p) for p in (Bf, D, E, Af)]       # the two bag layers sewn together here
+    item["fh_opening"] = [list(p) for p in sc["ext"]]
     for poly in (facing, bag):
         if geo.signed_area(poly) < 0:
             poly.reverse()
@@ -128,7 +189,7 @@ def add_scoop_pocket(context, parent, corner_vid, rivets=True):
     item.id = ft.new_id(parent)
     item.kind = 'SCOOP'
     item.corner = corner_vid
-    item.in_sim = False
+    item.in_sim = True
     ft.invalidate(parent)
     make_scoop_pieces(context, parent, item)
     if rivets:
@@ -148,9 +209,14 @@ def _beside(parent):
     return max(xs) - min(xs) + 0.08
 
 
+def _bag_front_poly(item):
+    pts = [tuple(p) for p in item["fh_bag_front"]]
+    return pts if geo.signed_area(pts) > 0 else pts[::-1]
+
+
 def make_scoop_pieces(context, parent, item):
     """(Re)make the facing and bag panels of a scoop pocket, laid out beside the parent."""
-    for attr in ("facing", "bag"):
+    for attr in ("facing", "bag", "bag_front"):
         old = getattr(item, attr)
         if old:
             delete_panel(old)
@@ -158,28 +224,73 @@ def make_scoop_pieces(context, parent, item):
     if facing is None:
         return
     dx = _beside(parent)
-    shift = lambda pts, dy: [(x + dx, y + dy) for x, y in pts]
     ys = [p[1] for p in bag]
-    item.facing = _child_panel(context, parent, shift(facing, 0.0), f"{parent.name} Pocket Facing", item.id, False)
-    item.bag = _child_panel(context, parent, shift(bag, -(max(ys) - min(ys)) - 0.05),
-                            f"{parent.name} Pocket Bag", item.id, False)
+    item.facing = _child_panel(context, parent, facing, f"{parent.name} Pocket Facing", item.id,
+                               'FACING', (dx, 0.0))
+    item.facing["fh_attach_line"] = item["fh_facing_attach"]
+    item.bag = _child_panel(context, parent, bag, f"{parent.name} Pocket Bag", item.id,
+                            'BAG', (dx, -(max(ys) - min(ys)) - 0.05))
+    item.bag["fh_cut_count"] = 2
+    # The bag's front layer: same pocketing, sewn to the opening edge. It's the
+    # same pattern piece (cut 2), so it is simulation-only and stays hidden.
+    bf = _child_panel(context, parent, _bag_front_poly(item), f"{parent.name} Pocket Bag Front Layer", item.id,
+                      'BAG_FRONT', (dx, -(max(ys) - min(ys)) - 0.05))
+    bf["fh_sim_only"] = True
+    bf["fh_attach_line"] = item["fh_opening"]
+    item.bag_front = bf
+
+
+def shield_shape(parent, zipper):
+    """Fly shield where it sits: behind the fly extension, from just inside the
+    centre-front line out under the fly. Returns (outline, attach line)."""
+    path = ft.zipper_path(parent, zipper)
+    if len(path) < 2:
+        return None, None
+    inner = dv.offset_polyline(path, 0.01)             # 1 cm inside CF: stitched here
+    outer = dv.offset_polyline(path, -zipper.fly_width * 0.9)
+    pts = inner + outer[::-1]
+    if geo.signed_area(pts) < 0:
+        pts.reverse()
+    return pts, inner
 
 
 def add_fly_shield(context, parent, zipper):
-    """Fly shield pattern piece for a fly zipper, laid out beside the parent."""
+    """Fly shield piece for a fly zipper: pattern piece + sits behind the fly in the sim."""
     if zipper.child:
         delete_panel(zipper.child)
-    w, L = 2 * zipper.fly_width, zipper.length + 0.03
-    path = ft.zipper_path(parent, zipper)
-    if not path:
+    ft.invalidate(parent)
+    pts, attach = shield_shape(parent, zipper)
+    if pts is None:
         return None
-    x0 = max(p[0] for _, p in ft.base_outline(parent)) + 0.08
-    y1 = max(p[1] for p in path)
-    pts = [(x0, y1), (x0, y1 - L + w / 2), (x0 + w / 2, y1 - L), (x0 + w, y1 - L + w / 2), (x0 + w, y1)]
-    if geo.signed_area(pts) < 0:
-        pts.reverse()
-    zipper.child = _child_panel(context, parent, pts, f"{parent.name} Fly Shield", zipper.id, False)
+    dx = _beside(parent) + 0.02
+    zipper.child = _child_panel(context, parent, pts, f"{parent.name} Fly Shield", zipper.id, 'SHIELD', (dx, 0.0))
+    zipper.child["fh_attach_line"] = [list(p) for p in attach]
     return zipper.child
+
+
+def regenerate(context, parent):
+    """Keep facing / bag / fly shield matched to the parent's current opening and fly."""
+    ft.invalidate(parent)
+    for item in parent.fh_features.pockets:
+        if item.kind != 'SCOOP' or not (item.facing or item.bag):
+            continue
+        facing, bag = scoop_shapes(parent, item)
+        if facing is None:
+            continue
+        if item.facing:
+            update_child_shape(context, item.facing, facing)
+            item.facing["fh_attach_line"] = item["fh_facing_attach"]
+        if item.bag:
+            update_child_shape(context, item.bag, bag)
+        if item.bag_front:
+            update_child_shape(context, item.bag_front, _bag_front_poly(item))
+            item.bag_front["fh_attach_line"] = item["fh_opening"]
+    for z in parent.fh_features.hardware:
+        if z.kind == 'ZIPPER' and z.style == 'FLY' and z.child:
+            pts, attach = shield_shape(parent, z)
+            if pts:
+                update_child_shape(context, z.child, pts)
+                z.child["fh_attach_line"] = [list(p) for p in attach]
 
 
 def delete_panel(obj):
@@ -199,7 +310,7 @@ def delete_panel(obj):
 
 
 def delete_item_children(item):
-    for attr in ("piece", "facing", "bag", "child"):
+    for attr in ("piece", "facing", "bag", "bag_front", "child"):
         o = getattr(item, attr, None)
         if o:
             delete_panel(o)

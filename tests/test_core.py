@@ -159,8 +159,8 @@ class Features(unittest.TestCase):
     def test_scoop_pocket(self):
         d = dv.derive(self.base, scoops=[dict(id=1, corner=3, width=0.12, depth=0.08, curve=0.35)])
         ex = [p for p, _ in d.export]
-        self.assertNotIn((0.5, 0.6), [tuple(round(c, 9) for c in p) for p in ex])   # paper: corner cut away
-        self.assertIn((0.5, 0.6), [tuple(round(c, 9) for c in p) for p in d.cut])   # sim: fabric stays
+        self.assertNotIn((0.5, 0.6), [tuple(round(c, 9) for c in p) for p in ex])     # paper: cut along the scoop
+        self.assertNotIn((0.5, 0.6), [tuple(round(c, 9) for c in p) for p in d.cut])  # sim: really open too
         side, j = d.chain(2, 3)
         self.assertAlmostEqual(dv.polyline_len(side, j), 0.6)                         # seams unaffected
 

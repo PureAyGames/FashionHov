@@ -103,8 +103,18 @@ def _palette(i):
     return (r, g, b, 1.0)
 
 
+class FHSeamLayer(bpy.types.PropertyGroup):
+    """An extra layer sewn into a seam (e.g. a lining, a facing, a label)."""
+    obj: bpy.props.PointerProperty(type=bpy.types.Object)
+    v0: bpy.props.IntProperty()
+    v1: bpy.props.IntProperty()
+    flip: bpy.props.BoolProperty(name="Flip", default=False,
+                                 description="Run this layer the other way along the seam")
+
+
 class FHSeam(bpy.types.PropertyGroup):
     number: bpy.props.IntProperty()
+    layers: bpy.props.CollectionProperty(type=FHSeamLayer)
     color: bpy.props.FloatVectorProperty(subtype='COLOR', size=4, min=0, max=1, default=(1, 0.5, 0, 1))
     a_obj: bpy.props.PointerProperty(type=bpy.types.Object)
     a_v0: bpy.props.IntProperty()
@@ -307,6 +317,35 @@ class FH_OT_sew(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class FH_OT_seam_add_layer(bpy.types.Operator):
+    """Sew another layer into the selected seam: in Edit Mode, select one run of edges on another
+    panel or piece (lining, facing, label...) and press this"""
+    bl_idname = "fashionhov.seam_add_layer"
+    bl_label = "Add Layer to Seam"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        sc = context.scene
+        return context.mode == 'EDIT_MESH' and 0 <= sc.fh_seam_index < len(sc.fh_seams)
+
+    def execute(self, context):
+        runs = []
+        for obj in context.objects_in_mode:
+            if obj.get("fh_panel"):
+                runs += [(obj, a, b) for a, b in runs_in_panel(obj) if a != b]
+            elif obj.get("fh_cloth_source"):
+                runs += runs_in_piece(obj)
+        if len(runs) != 1:
+            self.report({'WARNING'}, f"Select exactly 1 run of edges (found {len(runs)})")
+            return {'CANCELLED'}
+        seam = context.scene.fh_seams[context.scene.fh_seam_index]
+        layer = seam.layers.add()
+        layer.obj, layer.v0, layer.v1 = runs[0]
+        self.report({'INFO'}, f"Seam #{seam.number} now sews {2 + len(seam.layers)} layers")
+        return {'FINISHED'}
+
+
 class FH_OT_seam_remove(bpy.types.Operator):
     """Delete this seam"""
     bl_idname = "fashionhov.seam_remove"
@@ -329,16 +368,18 @@ class FH_UL_seams(bpy.types.UIList):
             row.label(text=f"#{item.number} broken (panel changed?)", icon='ERROR')
         else:
             a, b = seam_chains(item)
-            row.label(text=f"#{item.number} {item.a_obj.name} ↔ {item.b_obj.name}  "
+            extra = f" +{len(item.layers)} layer{'s' if len(item.layers) > 1 else ''}" if len(item.layers) else ""
+            row.label(text=f"#{item.number} {item.a_obj.name} ↔ {item.b_obj.name}{extra}  "
                            f"{fmt_len(context, polyline_length(a))}/{fmt_len(context, polyline_length(b))}")
         row.prop(item, "flip", text="", icon='ARROW_LEFTRIGHT')
         row.operator("fashionhov.seam_remove", text="", icon='X').index = index
 
 
-classes = (FH_OT_sew, FH_OT_seam_remove, FH_UL_seams)
+classes = (FH_OT_sew, FH_OT_seam_add_layer, FH_OT_seam_remove, FH_UL_seams)
 
 
 def register():
+    bpy.utils.register_class(FHSeamLayer)
     bpy.utils.register_class(FHSeam)
     bpy.types.Scene.fh_seams = bpy.props.CollectionProperty(type=FHSeam)
     bpy.types.Scene.fh_seam_index = bpy.props.IntProperty()
@@ -348,3 +389,4 @@ def unregister():
     del bpy.types.Scene.fh_seam_index
     del bpy.types.Scene.fh_seams
     bpy.utils.unregister_class(FHSeam)
+    bpy.utils.unregister_class(FHSeamLayer)

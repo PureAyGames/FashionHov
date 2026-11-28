@@ -45,7 +45,7 @@ def triangulate_panel(outline, spacing, lines=(), holes=()):
 
 
 PIECES = "FH Pieces"
-CONSTRAINT_LINES = ("pleat_fold", "pleat_inner", "fly_fold", "pleat_stitch", "pocket_place", "pocket_opening")
+CONSTRAINT_LINES = ("pleat_fold", "pleat_inner", "fly_fold", "pleat_stitch", "pocket_place")
 
 
 def pieces_collection(scene):
@@ -64,6 +64,9 @@ def build_cloth(context, panel, spacing, fabric_src=None):
     d = get_derived(panel)
     outline = d.cut if d else world_outline(panel)
     lines = [l["pts"] for l in d.lines if l["kind"] in CONSTRAINT_LINES] if d else []
+    for o in context.scene.objects:          # where inner pieces get stitched onto this panel
+        if o.get("fh_feature_of") == panel.name and o.get("fh_role") == 'SHIELD' and o.get("fh_attach_line"):
+            lines.append([tuple(p) for p in o["fh_attach_line"]])
     for a, b in (d.sews if d else []):
         lines += [a, b]
     verts, faces = triangulate_panel(outline, spacing, lines, d.holes if d else ())
@@ -93,6 +96,8 @@ def build_cloth(context, panel, spacing, fabric_src=None):
     obj["fh_cloth_source"] = panel.name
     obj["fh_spacing"] = spacing
     obj["fh_uv_off"] = [ox, oy]
+    from .pockets import home_delta
+    obj["fh_home_delta"] = list(home_delta(panel))
     # internal seams (dart legs, pleat tacks) and pleat intake, in this piece's UV space
     shift = lambda pts: [[p[0] + ox, p[1] + oy] for p in pts]
     obj["fh_sews"] = [[shift(a), shift(b)] for a, b in (d.sews if d else [])]

@@ -437,8 +437,8 @@ def _arc_from(d, i, dist, step):
 
 def _apply_scoop(d, sc):
     """Front scoop pocket opening at a corner: the panel is cut along a curve
-    (pattern + export), while the simulation keeps the fabric there (the pocket
-    facing sits right behind it). Returns the replacement curve."""
+    (pattern, export and simulation; the facing piece sits behind it).
+    Returns the replacement curve."""
     i = d.index_of_vid(sc["corner"])
     if i is None:
         return None
@@ -514,8 +514,8 @@ def derive(base, darts=(), pleats=(), flies=(), inner_darts=(), scoops=()):
     d.flies, d.scoops = fl_out, sc_out
     for f in fl_out:
         d.lines.append({"kind": "fly_stitch", "id": f["id"], "pts": f["jstitch"]})
-    # simulation outline: fly extensions + dart wedges cut out (scoops stay: facing fills them)
-    d.cut = [p for p, _ in _walk(d, [("fly", f) for f in fl_out], apexes)]
+    # simulation outline: fly extensions, scoop openings, dart wedges cut out
+    d.cut = [p for p, _ in _walk(d, [("fly", f) for f in fl_out] + [("scoop", x) for x in sc_out], apexes)]
     # paper pattern outline: fly extensions + scoop curves, darts drawn as legs
     d.export = _walk(d, [("fly", f) for f in fl_out] + [("scoop", x) for x in sc_out], None)
     return d

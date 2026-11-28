@@ -96,7 +96,7 @@ def piece_geometry(context, panel, grade=None):
     if panel.get("fh_feature_of"):
         _, item = ft.owner_of(panel)
         cut_from = "pocketing" if item is not None and getattr(item, "bag", None) == panel else "self fabric"
-        g["texts"].append(((cx + 0.01, cy - 0.012), f"Cut 1 {cut_from}", 0.005))
+        g["texts"].append(((cx + 0.01, cy - 0.012), f"Cut {panel.get('fh_cut_count', 1)} {cut_from}", 0.005))
     if grade:
         sx_, sy_, (ax, ay) = grade
         f = lambda p: (ax + (p[0] - ax) * sx_, ay + (p[1] - ay) * sy_)
@@ -116,6 +116,8 @@ def collect(context, size_index=None):
     size = sizes[size_index] if size_index is not None and len(sizes) else None
     out = []
     for panel in active_panels(scene):
+        if panel.get("fh_sim_only"):
+            continue
         grade = None
         if size is not None and base is not None and size != base:
             from .grading import ratios, anchor_of

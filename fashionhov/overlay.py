@@ -95,6 +95,11 @@ def seam_geometry(seam):
             shapes.append((_piece_side(piece, ch), False))
     for side in _garment_sides(seam):
         shapes.append((side, False))
+    for layer in seam.layers:
+        if layer.obj and layer.obj.visible_get():
+            ch = sewing.chain(layer.obj, layer.v0, layer.v1)
+            z = layer.obj.matrix_world.translation.z + 0.002
+            shapes.append(([(x, y, z) for x, y in ch], True))
     return shapes, threads
 
 

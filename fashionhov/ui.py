@@ -133,10 +133,10 @@ def _item_fields(coll, it):
     if coll == "hems":
         return ("fold", "width", "turn", "topstitch") if it.fold == 'DOUBLE' else ("fold", "width", "topstitch")
     if coll == "pockets":
-        return ("topstitch", "in_sim") if it.kind != 'SCOOP' else ("width", "depth", "curve", "topstitch")
+        return ("topstitch", "in_sim") if it.kind != 'SCOOP' else ("width", "depth", "curve", "topstitch", "in_sim")
     if it.kind == 'ZIPPER':
         f = ("style", "start", "length", "finish", "pull_at_start")
-        return f + (("fly_width",) if it.style == 'FLY' else ())
+        return f + (("fly_width", "shield_sim") if it.style == 'FLY' else ())
     if it.kind == 'BUTTONHOLE':
         return ("size", "angle")
     return ("size", "finish")
@@ -374,7 +374,9 @@ class FH_PT_sew(Sub, bpy.types.Panel):
         col.operator("fashionhov.arrange", icon='MOD_SIMPLEDEFORM')
         box = col.box()
         box.label(text="Seams (same colour + number in 2D and 3D)")
-        box.operator("fashionhov.sew", icon='AUTOMERGE_ON')
+        row = box.row(align=True)
+        row.operator("fashionhov.sew", icon='AUTOMERGE_ON')
+        row.operator("fashionhov.seam_add_layer", text="+ Layer", icon='ADD')
         if context.mode != 'EDIT_MESH':
             box.label(text="Tab into Edit Mode on panels or 3D pieces,", icon='INFO')
             box.label(text="select 2 runs of edges, then Sew.")

@@ -167,7 +167,7 @@ def fit_mpfb(context, obj, body, progress=None):
 def ensure_collision(obj):
     if not any(m.type == 'COLLISION' for m in obj.modifiers):
         obj.modifiers.new("Collision", 'COLLISION')
-        obj.collision.thickness_outer = 0.004
+        obj.collision.thickness_outer = 0.0015
         obj.collision.cloth_friction = 5.0
 
 
